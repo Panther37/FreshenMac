@@ -1,241 +1,263 @@
 # FreshenMac
 
-**Automated macOS System, App Store, and Homebrew Maintenance Utility**
+A friendly tool that automatically keeps macOS, Homebrew, and App Store apps updated.
 
-FreshenMac is a unified maintenance and update automation tool for macOS. It orchestrates updates across Homebrew (formulae and casks), the Mac App Store, and macOS system software updates, pairing them with an intelligent reboot escalation sequence and `launchd` automation.
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Architecture & Modules](#architecture--modules)
-- [Installation & Setup](#installation--setup)
-- [Command-Line Usage](#command-line-usage)
-  - [Options Reference](#options-reference)
-  - [Examples](#examples)
-- [Configuration & Preferences](#configuration--preferences)
-  - [Scheduling (Cron Syntax)](#scheduling-cron-syntax)
-  - [Ignoring Mac App Store Apps](#ignoring-mac-app-store-apps)
-- [Subsystems Deep Dive](#subsystems-deep-dive)
-  - [Homebrew Maintenance](#homebrew-maintenance)
-  - [macOS Software Updates & Apple Silicon](#macos-software-updates--apple-silicon)
-  - [Reboot Escalation & FileVault AuthRestart](#reboot-escalation--filevault-authrestart)
-  - [LaunchAgent & Package Synchronization](#launchagent--package-synchronization)
-- [Development & Testing](#development--testing)
-  - [Coding Style & Ordering Invariants](#coding-style--ordering-invariants)
-  - [Running Tests](#running-tests)
+[![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
+[![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-289%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
-## Overview
+## Why I Built This
 
-Keeping a Mac fully updated unattended requires coordinating multiple package managers, privilege levels, user sessions, and hardware constraints. FreshenMac solves this by:
+Every time my child came home from college, their laptop was in the same state: **zero updates installed**.
 
-1. **Unifying Update Layers:** Sequentially updates Homebrew, Mac App Store apps (`mas`), and macOS system software.
-2. **Handling Privilege Escalation:** Manages background `sudo` timestamp refresh (`SudoKeepAlive`) and bypasses password re-prompts safely.
-3. **Smart Rebooting:** Detects when restarts are required, respects user activity and system idle time, and supports FileVault authenticated restarts (`fdesetup authrestart`).
-4. **Self-Deploying Automation:** Synchronizes its own package code to `/Library/scripts/User/freshenmac` and schedules recurring execution via `launchd`.
+Even after I downloaded pending updates, they never restarted their computer to finish the install. Critical security
+fixes and app updates sat there for months.
 
----
-
-## Key Features
-
-- **Homebrew Orchestration:**
-  - Updates and upgrades both formulae and GUI casks.
-  - Automatically identifies packages requiring `cmake` or build dependencies.
-  - Reinstalls unpinned or broken packages and runs cleanups.
-  - Non-interactive execution (`HOMEBREW_NO_ASK=1`, `HOMEBREW_NO_ENV_HINTS=1`).
-
-- **Mac App Store (`mas`):**
-  - Detects installed GUI applications currently running to avoid abruptly killing active apps.
-  - Configurable blacklist (`Ignore MAS`) to skip specific application IDs or names.
-
-- **macOS System Software Updates:**
-  - Two-stage execution: downloads updates first, then stages installation.
-  - Apple Silicon Volume Owner handling: automatically detects manual authentication requirements, alerts the user, and opens System Settings directly to the Software Update pane.
-
-- **Intelligent Reboot Engine:**
-  - Evaluates system uptime (default threshold: 15 days) and update restart requirements.
-  - Escalation ladder: interactive prompt $\rightarrow$ snooze support $\rightarrow$ system idle detection ($\ge 60$ minutes) $\rightarrow$ authenticated restart (`authrestart`) $\rightarrow$ clean Time Machine backup check $\rightarrow$ graceful shutdown.
-
-- **Native Terminal Experience:**
-  - Undulating wave spinner (`util.Wave`) for long-running CLI operations.
-  - Robust logging to `/Library/Logs/FreshenMac.log` or fallback to user logs.
+I built **FreshenMac** to keep their Mac updated and secure while they are away at school. It runs quietly in the
+background on a schedule. It coordinates updates for Homebrew, the App Store, and macOS. It keeps your administrator
+permissions active without nagging you for passwords. It waits to update open apps so it never interrupts your work.
+When the Mac is truly idle, it politely restarts the computer.
 
 ---
 
-## Architecture & Modules
+## What It Does
 
-The codebase is organized under `src/freshenmac/`:
-
-| Module | Primary Classes / Components | Description |
-| :--- | :--- | :--- |
-| [`FreshenMac.py`](file:///Users/matt/workspace/FreshenMac/src/FreshenMac.py) | Entrypoint script | Top-level CLI executable that invokes `main.main()`. |
-| [`config.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/config.py) | Configuration constants | Metadata (`APP_INFO`), filesystem paths (`PATHS`), timeouts, and idle thresholds. |
-| [`main.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/main.py) | `main()`, `perform_updates()` | CLI argument parsing, interactive `sudo` priming, and execution orchestration. |
-| [`computer.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/computer.py) | `MacOS` | High-level macOS interface: system idle calculation, hardware detection, MAS execution, OS updates, and summary generation. |
-| [`homebrew.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/homebrew.py) | `HomeBrew` | Formula and cask update lifecycle, bottle/source detection, and dependency inspection. |
-| [`boot.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/boot.py) | `Reboot`, `RebootState` | Reboot escalation sequence, snooze management, FileVault `authrestart`, and caffeinate wrapper. |
-| [`plist.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/plist.py) | `LaunchAgent`, `PackageSync`, `SavePreferences`, `StartupRun` | `launchd` plist generation, cron expression parsing, preferences management, and one-shot startup re-runs. |
-| [`util.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/util.py) | `RunCMD`, `Logger`, `Wave`, `SudoKeepAlive`, `Version`, `PlaySound` | Subprocess execution, logging, natural version comparison, terminal wave spinner, and background sudo daemon. |
-| [`xcode.py`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/xcode.py) | `Xcode` | Developer tools / Xcode app bundle inspection and automated license agreement acceptance. |
+- **Homebrew:** Updates tools and apps, and removes old files. Automatically detects and heals interrupted git rebases
+  or dirty tap repositories. Some packages on Intel Macs need to build from source code using CMake. FreshenMac checks
+  for Xcode build tools first. It then updates those packages one at a time so nothing gets blocked.
+- **App Store:** Updates your Mac App Store apps using `mas`. If an app is open, FreshenMac waits to update it so you do
+  not lose any work. It finishes updating that app the next time you log in. You can also ignore apps by name or ID
+  number.
+- **macOS Updates:** Stages and downloads system updates in the background. If an Apple Silicon Mac needs Volume Owner
+  authentication, FreshenMac shows a friendly pop-up dialog and opens the right System Settings screen for you.
+- **Xcode Tools:** Automatically accepts the Xcode license. It also sets up Xcode components quietly so you do not see
+  pop-up boxes after a restart.
+- **Polite Restarts:** Never surprises you with a restart. It gives you a pop-up dialog where you can restart now or
+  snooze. If snoozed, it waits until nobody has used the Mac for at least 60 minutes. It also pauses Time Machine
+  backups safely before rebooting.
+- **FileVault Fast Restart:** Uses `fdesetup authrestart` to restart past FileVault encryption straight to your desktop.
+  You do not get stuck waiting at the pre-boot password screen.
+- **Scheduled Background Runs:** Sets up a standard macOS background task (`LaunchAgent`). By default, it runs every
+  Sunday at 2:00 AM, or on any schedule you choose.
 
 ---
 
-## Installation & Setup
+## Quick Start
 
 ### Prerequisites
-- macOS 12+ (Apple Silicon or Intel x86_64)
-- Python 3.10+
-- [Homebrew](https://brew.sh) (optional, but recommended)
-- [`mas-cli`](https://github.com/mas-cli/mas) (for App Store automation)
 
-### Running Directly
+- **macOS:** Version 12.0 (Monterey) or newer. Works on Apple Silicon and Intel Macs.
+- **Python:** Version 3.9 or higher (works with macOS system Python 3.9.6+; tested through Python 3.14).
+    - Download it from [python.org](https://www.python.org/downloads/) or install it with Homebrew.
+    - macOS includes Python 3.9.6 when you install the Xcode Command Line Tools (`xcode-select --install`).
+- **Xcode Command Line Tools:** (optional)
+    - FreshenMac checks if you have these tools. If they are missing, it asks to install them or installs them for you.
+- **Homebrew:** (optional) [`brew.sh`](https://brew.sh)
+    - To install Homebrew, run this command in your Terminal:
+      ```bash
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      ```
+- **App Store CLI:** (optional) [`mas`](https://github.com/mas-cli/mas)
+    - If Homebrew is on your Mac, FreshenMac installs `mas` for you automatically.
+
+### Running Manually
+
+Run the script directly in your Terminal:
+
 ```bash
-# Run from repository root
-PYTHONPATH=src python3 src/FreshenMac.py
+# Run all updates (Homebrew, App Store, and macOS)
+python3 FreshenMac.py
+
+# Run updates without restarting your computer
+python3 FreshenMac.py --no-reboot
+
+# Show more details while running
+python3 FreshenMac.py -v
+
+# Show full details and command output
+python3 FreshenMac.py -vv
+
+# Trace mode (shows every detail with no character limit)
+python3 FreshenMac.py --trace
 ```
+
+*(Note: If you run from a cloned git folder, run `python3 src/FreshenMac.py` or switch to the `src` folder first).*
 
 ---
 
-## Command-Line Usage
+## Command Options
 
-```text
-usage: FreshenMac.py [-h] [-f] [-i APP [APP ...]] [-l DEBUG_LIMIT] [-r]
-                     [-s [PREF]] [--spinner] [--schedule CRON] [-u | --no-update]
-                     [--uninstall] [-v]
-```
-
-### Options Reference
-
-| Flag | Long Option | Description |
-| :--- | :--- | :--- |
-| `-v` | `--verbose` | Increase output verbosity (`-v`, `-vv`, `-vvv`). |
-| `-l` | `--debug-limit` | Maximum character length for debug command dumps (default: `10000`). |
-| `-f` | `--force-reboot` | Force a system reboot at the end of updates, bypassing uptime and requirement checks. |
-| `-r` | `--no-reboot` | Disable all reboot attempts regardless of update requirements. |
-| `-i` | `--ignore-mas` | Space-separated list of Mac App Store app IDs or names to skip during updates. |
-| `-s` | `--save-prefs` | Save a preference (e.g. `-s "Schedule=0 6 * * 1"`). Run with no argument to view options. |
-| `--schedule` | `--cron` | Schedule execution using standard 5-part cron syntax (e.g. `'0 4 * * 1'`). |
-| `-u` | `--update` | Automatically sync updated package files to `/Library/scripts/User/freshenmac`. |
-| `--uninstall`| | Unloads and removes the background `launchd` service. |
-| `--spinner` | | Test and visually inspect the terminal wave animation. |
-
-### Examples
-
-**Standard full update (Homebrew, MAS, and macOS):**
-```bash
-./src/FreshenMac.py
-```
-
-**Run updates without rebooting:**
-```bash
-./src/FreshenMac.py --no-reboot
-```
-
-**Set up weekly automated runs every Monday at 4:00 AM:**
-```bash
-./src/FreshenMac.py --schedule "0 4 * * 1"
-```
-
-**Verbose debug run skipping a specific App Store app:**
-```bash
-./src/FreshenMac.py -vv -i "GarageBand"
-```
+| Flag                    | Short    | Description                                                                                                               |
+|:------------------------|:---------|:--------------------------------------------------------------------------------------------------------------------------|
+| `--verbose`             | `-v`     | Show more detail (`-v`, `-vv`, etc.). Also limits output to 10,000 characters unless you set `--debug-limit`.             |
+| `--debug-limit <N>`     | `-l <N>` | Set a custom character limit for logs (use a negative number for unlimited).                                              |
+| `--trace`               |          | Maximum detail with no character limit. Same as `--debug-limit=-1 -vvvv`.                                                 |
+| `--no-reboot`           | `-r`     | Run all updates, but skip reboot prompts and automatic restarts.                                                          |
+| `--force-reboot`        | `-f`     | Force a restart when updates finish, skipping minimum uptime checks.                                                      |
+| `--ignore-mas <APP...>` | `-i`     | Skip App Store apps by name or ID number (for example: `-i iPhoto 408981381`).  This is not persistent.  See `--schedule` |
+| `--schedule "<CRON>"`   | `--cron` | Set a background schedule using standard 5-part cron syntax (for example: `--schedule "0 18 * * 1"`).                     |
+| `--save-prefs [PREF]`   | `-s`     | Save a setting permanently to your preferences file. Run `-s` alone to view all settings.                                 |
+| `--update`              | `-u`     | Update the installed background script if your current files have a newer build number.                                   |
+| `--no-update`           |          | Do not update the background script even if newer files exist.                                                            |
+| `--uninstall`           |          | Turn off and delete the scheduled background service.                                                                     |
+| `--spinner`             |          | Test the terminal wave spinner animation.                                                                                 |
 
 ---
 
-## Configuration & Preferences
+## Scheduling & Automation
 
-Preferences are stored in:
-- System default: `/Library/Preferences/com.panther37.FreshenMac.plist`
-- User overrides: `~/Library/Preferences/com.panther37.FreshenMac.plist`
-
-### Scheduling (Cron Syntax)
-FreshenMac converts 5-field cron syntax into native `launchd` `StartCalendarInterval` dictionary structures:
+FreshenMac can run quietly on its own using standard 5-field cron syntax:
 
 ```bash
-# Run daily at 6:30 AM
-./src/FreshenMac.py --schedule "30 6 * * *"
+# Run every Monday at 6:00 PM
+python3 FreshenMac.py --schedule "0 18 * * 1"
+
+# Run Monday through Friday at 2:30 AM
+python3 FreshenMac.py --schedule "30 2 * * 1-5"
 
 # Run on the 1st and 15th of every month at midnight
-./src/FreshenMac.py --schedule "0 0 1,15 * *"
+python3 FreshenMac.py --schedule "0 0 1,15 * *"
 ```
 
-### Ignoring Mac App Store Apps
-Apps can be permanently ignored in preferences:
+This creates a background service file here:
+`~/Library/LaunchAgents/com.panther37.FreshenMac.plist`
+
+To remove the scheduled service:
+
 ```bash
-./src/FreshenMac.py -s "Ignore MAS=1447605203, Xcode"
+python3 FreshenMac.py --uninstall
+```
+
+### Saving Preferences
+
+You can save your settings so FreshenMac remembers them every time it runs. Settings are stored in
+`~/Library/Preferences/com.panther37.FreshenMac.plist`:
+
+```bash
+# View all settings and their current values
+python3 FreshenMac.py --save-prefs
+
+# Skip an App Store app by name (for example, old software like iPhoto)
+python3 FreshenMac.py --save-prefs "no-mas=iPhoto"
+
+# Skip an App Store app by its numeric ID number
+python3 FreshenMac.py --save-prefs "no-mas=408981381"
+
+# Skip multiple apps at once (separate names or IDs with a space)
+python3 FreshenMac.py --save-prefs "no-mas=Aperture 408981381"
 ```
 
 ---
 
-## Subsystems Deep Dive
+## How Rebooting Works
 
-### Homebrew Maintenance
-[`freshenmac.homebrew.HomeBrew`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/homebrew.py#L33) ensures system packages stay clean:
-- Pre-checks `xcodebuild -license` so formulae requiring build tools do not fail mid-installation.
-- Sorts formulae and identifies build dependencies (e.g. `cmake`).
-- Upgrades outdated packages and casks.
-- Captures output and generates a structured summary dictionary:
-  ```python
-  self.summary_results = {'updated': {...}, 'unchanged': {...}, 'installed': {...}}
-  ```
+FreshenMac keeps your Mac secure without getting in your way:
 
-### macOS Software Updates & Apple Silicon
-[`freshenmac.computer.MacOS`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/computer.py#L35) manages OS-level updates:
-- Runs `softwareupdate --list` to locate eligible update labels.
-- Downloads updates first via `softwareupdate -d <label>`.
-- Attempts silent installation with elevated credentials.
-- On Apple Silicon, if manual Volume Owner authentication is required:
-  1. Displays an alert banner in the terminal log.
-  2. Launches an alert dialog via AppleScript.
-  3. Immediately opens `System Settings > General > Software Update`.
-
-### Reboot Escalation & FileVault AuthRestart
-[`freshenmac.boot.Reboot`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/boot.py#L20) coordinates restarts:
-1. Wraps operations in `caffeinate` to prevent machine sleep during execution.
-2. Plays a sound chime (`Ping`, `Sosumi`) and displays an interactive dialog with uptime statistics.
-3. If FileVault is enabled, attempts `fdesetup authrestart` using encrypted memory keys to bypass the pre-boot login screen directly into macOS to apply updates.
-4. If snoozed, monitors system idle time (`all_user_idle_time`). If the computer is left idle for $\ge 60$ minutes, it proceeds automatically.
-
-### LaunchAgent & Package Synchronization
-[`freshenmac.plist.LaunchAgent`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/plist.py#L20) and [`PackageSync`](file:///Users/matt/workspace/FreshenMac/src/freshenmac/plist.py#L461):
-- Keeps running script builds synchronized with `/Library/scripts/User/freshenmac/`.
-- Inspects `FILE_BUILD` integers across source and destination files.
-- Generates launchd plists with standard logging redirected to `/Library/Logs/com.panther37.FreshenMac.stdout.log` and `.stderr.log`.
+1. **Checks Uptime and Requirements:** It only suggests a restart if your Mac has been turned on for more than 15 days,
+   or if an installed macOS update requires a reboot.
+2. **Asks Before Restarting:** If someone is using the Mac, a pop-up box asks you to **Restart Now** or **Snooze**.
+3. **Waits for Idle Time:** If you click Snooze, FreshenMac waits until nobody is using the keyboard, mouse, or
+   terminal. Once the computer has been quiet for 60 minutes, it safely restarts.
+4. **Protects Backups:** If Time Machine is backing up files, FreshenMac asks it to pause safely before restarting.
+5. **Fast FileVault Restart:** If FileVault disk encryption is turned on, FreshenMac uses `authrestart`. This boots
+   straight back to the desktop without getting stuck at the login lock screen.
+6. **Catches Up on Open Apps:** If an App Store app could not update because you were using it, FreshenMac schedules a
+   quick update for your next login. Once that app is updated, the task removes itself.
 
 ---
 
-## Development & Testing
+## Architecture
 
-### Coding Style & Ordering Invariants
-The codebase adheres to strict ordering rules enforced by [`test_architecture.py`](file:///Users/matt/workspace/FreshenMac/test/test_architecture.py) and [`.amazonq/rules/style.md`](file:///Users/matt/workspace/FreshenMac/.amazonq/rules/style.md):
-1. **Keyword arguments in signatures:** Alphabetical order.
-2. **Instance variable assignments in `__init__`:** Alphabetical order.
-3. **Class methods:** Alphabetical order (`__init__` first, then `_private`, then `public`).
-4. **Module constants:** Alphabetical order.
+FreshenMac is built with small, separate pieces where each tool has one job:
 
-### Running Tests
-Execute the entire test suite using `unittest`:
+```mermaid
+flowchart TD
+    subgraph Core["CLI & Orchestration"]
+        CLI["FreshenMac.py / main.py"]
+        Host["computer.py: MacOS Orchestrator"]
+        Config["config.py: Defaults, Paths & Thresholds"]
+        CLI --> Host
+        Config -.-> CLI
+        Config -.-> Host
+    end
+
+    subgraph SystemInt["macOS System Integration - plist.py"]
+        LaunchAgent["LaunchAgent: Daemon Scheduling & Sudoers"]
+        PkgSync["PackageSync: Script File Synchronization"]
+        StartupRun["StartupRun: One-Shot Login Recovery"]
+        Prefs["Preferences: Plist Read & Write"]
+    end
+
+    subgraph Engines["Maintenance Subsystems"]
+        Brew["homebrew.py: HomeBrew"]
+        SWU["softwareupdate.py: SoftwareUpdate"]
+        MAS["mas.py: AppStore"]
+        XC["xcode.py: Xcode"]
+        Boot["boot.py: Reboot Engine"]
+    end
+
+    CLI -->|" Install / Schedule / Prefs "| SystemInt
+    Host --> Engines
+    MAS -->|" Defer Running Apps "| StartupRun
+    style CLI font-weight: bold, font-size: 18px, stroke-width: 4px
+```
+
+### Module Breakdown
+
+- `FreshenMac.py`: Starts the program and returns the exit code.
+- `freshenmac/main.py`: Reads command-line options, prompts for administrator passwords when needed, and starts tasks.
+- `freshenmac/computer.py`: Coordinates the update run. Checks hardware details, uptime, and idle time. Prints the final
+  summary report.
+- `freshenmac/homebrew.py`: Updates Homebrew tools and apps. Handles source code builds on Intel Macs and cleans up old
+  files.
+- `freshenmac/mas.py`: Updates Mac App Store apps using `mas`. Checks for running apps so it does not interrupt your
+  work.
+- `freshenmac/softwareupdate.py`: Downloads and installs Apple macOS system updates. Opens System Settings if an owner
+  password is required.
+- `freshenmac/boot.py`: Handles computer restarts. Manages snooze dialogs, idle countdowns, Time Machine safety, and
+  FileVault fast restarts.
+- `freshenmac/xcode.py`: Checks for Xcode and Command Line Tools. Accepts the license agreement and finishes setup
+  tasks.
+- `freshenmac/plist.py`: Handles macOS system setup with four main parts:
+    - `LaunchAgent`: Creates background schedule files and configures permissions so tasks run unattended.
+    - `PackageSync`: Copies script files to the system script folder and updates them when newer builds are available.
+    - `StartupRun`: Creates a one-time login task to finish updating apps that were open during the main run.
+    - `SavePreferences` and `load_preferences`: Reads and saves user preferences.
+- `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
+- `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`) and AppleScript (`RunAppleScript`), parses natural
+  version numbers (`Version`), keeps administrator permissions active (`SudoKeepAlive`), and draws the progress
+  spinner (`Wave`).
+
+---
+
+## Running Tests
+
+FreshenMac has 289 automated tests. These tests verify that everything works correctly and that code follows strict
+project rules (like keeping classes and methods in alphabetical order):
 
 ```bash
+# Run all tests
 PYTHONPATH=src python3 -m unittest discover -s test
+
+# Run code style and structure checks
+PYTHONPATH=src python3 -m unittest test/test_architecture.py
 ```
 
-To run individual test modules:
-```bash
-# Architecture & ordering verification
-python3 -m unittest test/test_architecture.py
+All tests are safe to run. They use mock data so they never restart your real computer or change your actual system
+files.
 
-# Computer & OS update test suite
-PYTHONPATH=src python3 -m unittest test/test_mac_computer.py
+---
 
-# Homebrew test suite
-PYTHONPATH=src python3 -m unittest test/test_homebrew.py
+## License & Contributing
 
-# LaunchAgent and plist test suite
-PYTHONPATH=src python3 -m unittest test/test_plist.py
-```
+- Distributed under the [BSD 3-Clause License](LICENSE).
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor guidelines, testing instructions, and architectural invariants.
+
+---
+
+## Author
+
+Created by **Matt Logan** (<matt@panther37.com>).

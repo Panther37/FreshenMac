@@ -1,6 +1,6 @@
-FILE_BUILD = 1
+from freshenmac.main import main
 
-from .freshenmac import main
+FILE_BUILD = 20261005
 
 if __name__ == '__main__':
     main()

@@ -3,55 +3,63 @@ Configuration settings, path definitions, and operational thresholds for Freshen
 """
 
 from pathlib import Path
-
-# Debug & Execution Limits
-DEBUG_LIMIT: int = 10000
-DEFAULT_PLIST: str = 'com.panther37.FreshenMac'
-DEFAULT_PREFERENCES: Path = Path(f'/Library/Preferences/{DEFAULT_PLIST}.plist')
-DEFAULT_TIMEOUT: int = 1800
-
-# Module build number
-FILE_BUILD: int = 1
-
-# Idle Thresholds (seconds & minutes)
-IDLE_THRESHOLD: dict[str, int] = {
-    'min': 60,
-    'Wait for Reboot': 120,
-}
-IDLE_THRESHOLD['sec'] = IDLE_THRESHOLD['min'] * 60
-
-# Backwards-compatible aliases
-MAX_IDLE_MIN: int = IDLE_THRESHOLD['min']
-MAX_IDLE_SEC: int = IDLE_THRESHOLD['sec']
-
-# Filesystem Paths
-PACKAGE_DIR: Path = Path(__file__).resolve().parent
+from typing import Any
 
 # Program Metadata
-PROGRAM_DESCRIPTION: str = 'Updates macOS operating system, App store and homebrew'
-PROGRAM_NAME: str = 'FreshenMac'
-PROGRAM_VERSION: str = '1.0.0'
-
-PROGRAM_INFO: dict[str, str | int] = {
-    'debug_limit': DEBUG_LIMIT,
-    'default_plist': DEFAULT_PLIST,
-    'description': PROGRAM_DESCRIPTION,
-    'name': PROGRAM_NAME,
-    'version': PROGRAM_VERSION,
+APP_INFO: dict[str, str] = {
+    'Author':      'Matt Logan',
+    'Description': 'Updates macOS operating system, App store, and homebrew',
+    'Email':       'matt@panther37.com',
+    'Name':        'FreshenMac',
+    'Version':     '1.0.0',
 }
 
-REBOOT_WAIT_SECONDS: int = IDLE_THRESHOLD['Wait for Reboot']
-SOURCE_SCRIPT: Path = PACKAGE_DIR / f"{PROGRAM_NAME.lower()}.py"
-TARGET_DIR: Path = Path(f'/Library/scripts/User/{PROGRAM_NAME}')
-TARGET_SCRIPT: Path = TARGET_DIR / f"{PROGRAM_NAME.lower()}.py"
-UPTIME_DAYS_LIMIT: int = 15
-USER_PREFERENCES: Path = Path.home() / 'Library/Preferences' / f'{DEFAULT_PLIST}.plist'
+# Debug & Execution Limits
+DEFAULTS: dict[str, Any] = {
+    'Debug Limit': 10000,
+    'no-mas':      ['408981381', 'iPhoto'],  # Skip these App Store Updates
+    'plist':       f"com.panther37.{APP_INFO['Name']}",
+    'schedule': {
+            'Hour':    2,
+            'Minute':  0,
+            'Weekday': 0,
+        },
+}
 
-PATHS: dict[str, Path] = {
-    'package_dir': PACKAGE_DIR,
-    'preferences': DEFAULT_PREFERENCES,
-    'source_script': SOURCE_SCRIPT,
-    'target_dir': TARGET_DIR,
-    'target_script': TARGET_SCRIPT,
-    'user_preferences': USER_PREFERENCES,
+# Module build number
+FILE_BUILD = 20261005
+
+# Idle Thresholds (seconds)
+IDLE_THRESHOLD: dict[str, int] = {
+    'Minutes':        60,
+    'Reboot Wait':    120,
+    'Uptime in Days': 15,
+}
+IDLE_THRESHOLD['Seconds'] = IDLE_THRESHOLD['Minutes'] * 60
+
+# Filesystem Paths
+PATHS: dict[str, dict[str, Path]] = {
+    'Dir':    {
+        'Package': Path(__file__).resolve().parent,
+        'Target':  Path(f"/Library/scripts/User/{APP_INFO['Name'].lower()}"),
+    },
+    'Log':    {
+        'System': Path(f"/Library/Logs/{APP_INFO['Name']}.log"),
+        'User':   Path.home() / 'Library/Logs' / f"{APP_INFO['Name']}.log",
+    },
+    'Prefs':  {
+        'Default': Path(f"/Library/Preferences/{DEFAULTS['plist']}.plist"),
+        'User':    Path.home() / 'Library/Preferences' / f"{DEFAULTS['plist']}.plist",
+    },
+    'Script': {
+        'Source': Path(__file__).resolve().parent / 'main.py',
+        'Target': Path(f"/Library/scripts/User/{APP_INFO['Name'].lower()}/main.py"),
+    },
+}
+
+# Timeout Values (in seconds)
+TIMEOUT: dict[str, int] = {
+    'Boot':      1800,
+    'App Store': 1800,
+    'Upgrade':   10800,
 }
