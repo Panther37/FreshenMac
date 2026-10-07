@@ -20,7 +20,7 @@ from typing import Any, IO
 
 from freshenmac import config
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261006
 
 
 class Logger:
@@ -484,7 +484,7 @@ class RunCMD:
                 self.returncode = 130
                 self.canceled = True
                 self.stderr = f"Command canceled by user: {run_cmd_args}"
-                print(f"\n[Cancelled] Skipped by user: {' '.join(str(a) for a in self.cmd_args)}")
+                print(f"\n[Canceled] Skipped by user: {' '.join(str(x) for x in self.cmd_args)}")
             else:
                 raise
 

@@ -364,7 +364,7 @@ class MacOS:
             install_cmd = self.softwareupdate.install_label(
                 str(self.softwareupdate.os_ver['Label']),
                 # force_restart_now=True,
-                timeout=self.upgrade_timeout
+                timeout=self.upgrade_timeout,
             )
             self.log.print_store(
                 f"[Software Update] To install macOS {self.softwareupdate.os_ver['Label']}:\n  {install_cmd.std_all}",

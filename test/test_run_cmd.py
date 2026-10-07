@@ -495,8 +495,8 @@ class TestRunCMD(unittest.TestCase):
             cmd = RunCMD(['long_running_task'], timeout=1800, cancelable=True)
             self.assertFalse(bool(cmd))
             self.assertEqual(cmd.returncode, 130)
-            self.assertTrue(cmd.cancelled)
-            self.assertIn('cancelled by user', cmd.stderr)
+            self.assertTrue(cmd.canceled)
+            self.assertIn('canceled by user', cmd.stderr)
 
     def test_debug_limit_default_and_custom(self):
         """Verifies debug_limit clamps verbose command output printing."""

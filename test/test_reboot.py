@@ -29,7 +29,7 @@ def ensure_no_active_shutdown(
     """
     Safety guard for unit tests.
 
-    Guarantees no uncancelled macOS system shutdown timer remains on the host machine:
+    Guarantees no uncanceled macOS system shutdown timer remains on the host machine:
     1. Looks for any active 'shutdown' process via pgrep.
     2. If found, terminates it immediately (SIGTERM -> killall -9 -> sudo killall -> osascript).
     3. Confirms 'shutdown' is no longer running.

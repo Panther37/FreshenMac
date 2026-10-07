@@ -7,12 +7,14 @@ import sys
 
 from freshenmac.main import main
 
+FILE_BUILD = 20261006
+
 if __name__ == '__main__':
     try:
         success = main()
     except KeyboardInterrupt:
         success = False
-        print('\n          User Cancelled           \n')
+        print('\n          User Canceled            \n')
         sys.exit(130)
     if success:
         print('\n          Script finished          \n')
