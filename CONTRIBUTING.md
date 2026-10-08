@@ -3,7 +3,7 @@
 Thank you for your interest in contributing to **FreshenMac**! FreshenMac is an automated, polite, and unobtrusive macOS
 maintenance tool designed to keep macOS, Homebrew, and App Store applications seamlessly up to date.
 
-We welcome bug reports, feature suggestions, documentation enhancements, and pull requests.
+We welcome bug reports, feature suggestions, documentation enhancements, and pull requests. If you discover a security vulnerability, please follow our [Security Policy](SECURITY.md) to report it privately.
 
 ---
 
