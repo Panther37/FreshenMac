@@ -4,11 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
+from freshenmac import plist, util
 from freshenmac.boot import RebootState
 from freshenmac.computer import MacOS
 from freshenmac.homebrew import HomeBrew
 from freshenmac.util import RunCMD
-from freshenmac.xcode import Xcode
 
 
 def make_cmd(stdout: str = "", stderr: str = "", errno: int = 0) -> RunCMD:
@@ -68,44 +68,50 @@ class TestMacOS(unittest.TestCase):
         # Arrange: updates were performed and system uptime is 16 days
         self.mac._updates_performed = True
         with patch.object(MacOS, 'uptime_days', new_callable=PropertyMock, return_value=16), \
-            patch.object(MacOS, 'check_staged_reboot', return_value=False):
+            patch('freshenmac.softwareupdate.SoftwareUpdate.check_staged_reboot', return_value=0):
             # Act
             status = self.mac.check_reboot_status()
 
             # Assert
-            self.assertGreaterEqual(status.suggested, 1)
+            self.assertTrue(status.suggested)
 
     def test_check_staged_reboot_missing(self):
-        """Verifies check_staged_reboot returns False when index.plist does not exist."""
+        """Verifies check_staged_reboot returns 0 when index.plist does not exist."""
         # Arrange: updates index.plist does not exist
-        with patch('freshenmac.computer.Path.is_file', return_value=False):
+        with patch('freshenmac.softwareupdate.Path.is_file', return_value=False):
             # Act
-            result = self.mac.check_staged_reboot()
+            result = self.mac.softwareupdate.check_staged_reboot()
 
             # Assert
-            self.assertFalse(result)
-            self.assertEqual(self.mac.reboot.required, 0)
+            self.assertEqual(result, 0)
+            self.assertEqual(self.mac.reboot.required, [])
 
     def test_check_staged_reboot_with_install_at_logout(self):
         """Verifies check_staged_reboot detects staged update in index.plist with InstallAtLogout."""
-        # Arrange: create temporary index.plist containing InstallAtLogout=True
+        # Arrange: create temporary index.plist containing InstallAtLogout with verified payload directory
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_index = Path(temp_dir) / 'index.plist'
+            payload_dir = Path(temp_dir) / '001-12345'
+            payload_dir.mkdir()
             with open(fake_index, 'wb') as f:
-                plistlib.dump({'InstallAtLogout': True}, f)
+                plistlib.dump({'InstallAtLogout': ['001-12345']}, f)
 
             with patch(
-                'freshenmac.computer.Path',
+                'freshenmac.softwareupdate.Path',
                 side_effect=lambda *args, **kwargs: fake_index if any(
                     '/Library/Updates' in str(a) for a in args
                 ) else Path(*args, **kwargs),
             ):
-                # Act
-                result = self.mac.check_staged_reboot()
+                # Act: query directly
+                result = self.mac.softwareupdate.check_staged_reboot()
 
-                # Assert
-                self.assertTrue(result)
-                self.assertGreaterEqual(self.mac.reboot.required, 1)
+                # Assert: query returns 1 without mutating state
+                self.assertEqual(result, 1)
+                self.assertEqual(self.mac.reboot.required, [])
+
+                # Act: orchestrator evaluates check_staged_reboot and updates reboot state
+                self.mac.check_reboot_status()
+                self.assertIn('Staged Apple Software Update (1)', self.mac.reboot.required)
 
     def test_cmd_options(self):
         """Verifies cmd_options compiles execution options dictionary with defaults."""
@@ -129,7 +135,7 @@ class TestMacOS(unittest.TestCase):
         mac.__dict__['mas_path'] = Path('')
 
         with patch('freshenmac.computer.RunCMD') as mock_cmd, \
-            patch('freshenmac.mas.RunCMD') as mock_mas_cmd:
+            patch('freshenmac.mas.util.RunCMD') as mock_mas_cmd:
             # Act
             result = mac.has_mas
 
@@ -145,7 +151,7 @@ class TestMacOS(unittest.TestCase):
         mac.__dict__['arm_installed'] = False
         mac.__dict__['mas_path'] = Path('')
 
-        with patch('freshenmac.mas.RunCMD') as mock_cmd:
+        with patch('freshenmac.mas.util.RunCMD') as mock_cmd:
             mock_cmd.return_value.returncode = 0
             mock_cmd.return_value.__bool__.return_value = True
             with patch('freshenmac.mas.shutil.which', return_value='/opt/homebrew/bin/mas'):
@@ -175,31 +181,31 @@ class TestMacOS(unittest.TestCase):
         # Assert
         self.assertTrue(self.mac.dry_run)
         self.assertIsInstance(self.mac.reboot, RebootState)
-        self.assertEqual(self.mac.reboot.required, 0)
-        self.assertEqual(self.mac.reboot.suggested, 0)
+        self.assertEqual(self.mac.reboot.required, [])
+        self.assertEqual(self.mac.reboot.suggested, [])
 
     def test_is_app_running_mocked(self):
         """Verifies is_app_running accurately checks process existence via pgrep and AppleScript fallback."""
-        with patch('freshenmac.computer.RunCMD') as mock_cmd, \
-            patch('freshenmac.computer.util.RunAppleScript') as mock_osa:
+        with patch('freshenmac.util.RunCMD') as mock_cmd, \
+            patch('freshenmac.util.RunAppleScript') as mock_osa:
             # Case 1: pgrep finds match (returncode 0)
             mock_cmd.return_value = make_cmd(errno=0)
-            self.assertTrue(self.mac.is_app_running('Logic Pro'))
+            self.assertTrue(util.is_app_running('Logic Pro'))
 
             # Case 2: pgrep finds no match, AppleScript finds no match
             mock_cmd.return_value = make_cmd(errno=1)
             mock_osa.return_value = MagicMock(returncode=0, stdout='Finder, Terminal')
-            self.assertFalse(self.mac.is_app_running('Logic Pro'))
+            self.assertFalse(util.is_app_running('Logic Pro'))
 
             # Case 3: pgrep finds no match, AppleScript finds match
             mock_osa.return_value = MagicMock(returncode=0, stdout='Finder, Logic Pro, Terminal')
-            self.assertTrue(self.mac.is_app_running('Logic Pro'))
+            self.assertTrue(util.is_app_running('Logic Pro'))
 
     def test_is_app_running_real_finder(self):
         """Verifies is_app_running against real Finder on macOS GUI or nonexistent app."""
-        if all([self.mac.is_mac, self.mac.is_app_running('Finder')]):
-            self.assertTrue(self.mac.is_app_running('Finder'))
-        self.assertFalse(self.mac.is_app_running('TotallyNonExistentApp123xyz'))
+        if all([self.mac.is_mac, util.is_app_running('Finder')]):
+            self.assertTrue(util.is_app_running('Finder'))
+        self.assertFalse(util.is_app_running('TotallyNonExistentApp123xyz'))
 
     def test_is_idle(self):
         """Verifies is_idle returns True when all_user_idle_time >= IDLE_THRESHOLD['Seconds']."""
@@ -261,7 +267,7 @@ class TestMacOS(unittest.TestCase):
                     mock_cmd.return_value.returncode = 0
 
                     # Act: schedule startup run
-                    scheduled = self.mac.schedule_startup_run()
+                    scheduled = plist.StartupRun(dry_run=self.mac.dry_run, logger=self.mac.log).schedule()
                     self.assertTrue(scheduled)
 
                     # Assert: plist written correctly
@@ -308,27 +314,27 @@ class TestMacOS(unittest.TestCase):
             return mock
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd):
-            with patch.object(mac, 'is_app_running', return_value=False):
-                with patch.object(mac, 'schedule_startup_run') as mock_schedule:
-                    # Act
-                    mac._update_mas()
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd), \
+            patch('freshenmac.mas.util.is_app_running', return_value=False), \
+            patch('freshenmac.plist.StartupRun.schedule') as mock_schedule:
+            # Act
+            mac._update_mas()
 
-                    # Assert: Xcode skipped, Logic Pro upgraded
-                    upgraded_ids = [
-                        c[2] for c in executed_commands
-                        if all(
-                            [
-                                len(c) >= 3,
-                                c[0].endswith('mas') if c else False,
-                                c[1] == 'upgrade' if len(c) > 1 else False,
-                            ],
-                        )
-                    ]
-                    self.assertNotIn('497799835', upgraded_ids)
-                    self.assertIn('634148309', upgraded_ids)
-                    self.assertEqual(mac.reboot.required, 0)
-                    mock_schedule.assert_not_called()
+            # Assert: Xcode skipped, Logic Pro upgraded
+            upgraded_ids = [
+                c[2] for c in executed_commands
+                if all(
+                    [
+                        len(c) >= 3,
+                        c[0].endswith('mas') if c else False,
+                        c[1] == 'upgrade' if len(c) > 1 else False,
+                    ],
+                )
+            ]
+            self.assertNotIn('497799835', upgraded_ids)
+            self.assertIn('634148309', upgraded_ids)
+            self.assertEqual(mac.reboot.required, [])
+            mock_schedule.assert_not_called()
 
     def test_update_mas_skips_running_gui_app(self):
         """Verifies _update_mas defers upgrading currently running GUI apps to next reboot."""
@@ -353,17 +359,19 @@ class TestMacOS(unittest.TestCase):
             return mock
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd) as mock_cmd:
-            with patch.object(self.mac, 'schedule_startup_run') as mock_schedule:
-                # Act
-                self.mac._update_mas()
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd) as mock_cmd, \
+            patch('freshenmac.mas.util.is_app_running', return_value=True), \
+            patch('freshenmac.plist.StartupRun.schedule', return_value=True) as mock_schedule:
+            # Act
+            self.mac._update_mas()
 
-                # Assert: deferred to startup run, reboot required incremented, upgrade skipped
-                self.assertEqual(self.mac.reboot.required, 1)
-                mock_schedule.assert_called_once()
-                for call_args in mock_cmd.call_args_list:
-                    args, _ = call_args
-                    self.assertNotIn('upgrade', args[0])
+            # Assert: deferred to startup run, reboot required is empty, upgrade skipped
+            self.assertFalse(self.mac.reboot.required)
+            self.assertTrue(self.mac.app_store.defer.running)
+            mock_schedule.assert_called_once()
+            for call_args in mock_cmd.call_args_list:
+                args, _ = call_args
+                self.assertNotIn('upgrade', args[0])
 
     def test_update_mas_upgrades_non_running_app(self):
         """Verifies _update_mas executes mas upgrade with utility taskpolicy on idle apps."""
@@ -390,22 +398,22 @@ class TestMacOS(unittest.TestCase):
             return mock
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd):
-            with patch.object(self.mac, 'is_app_running', return_value=False):
-                # Act
-                self.mac._update_mas()
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd), \
+            patch('freshenmac.mas.util.is_app_running', return_value=False):
+            # Act
+            self.mac._update_mas()
 
-                # Assert: upgraded successfully with utility taskpolicy
-                self.assertEqual(self.mac.reboot.required, 0)
-                upgraded = [(c, kw) for c, kw in executed_commands if all(['upgrade' in c, '497799835' in c])]
-                self.assertTrue(upgraded)
-                self.assertEqual(upgraded[0][1].get('taskpolicy'), 'utility')
+            # Assert: upgraded successfully with utility taskpolicy
+            self.assertEqual(self.mac.reboot.required, [])
+            upgraded = [(c, kw) for c, kw in executed_commands if all(['upgrade' in c, '497799835' in c])]
+            self.assertTrue(upgraded)
+            self.assertEqual(upgraded[0][1].get('taskpolicy'), 'utility')
 
     def test_update_os_downloaded_higher_version_triggers_reboot(self):
         """Verifies _update_os increments reboot requirement when higher macOS version downloaded."""
         # Arrange
         self.mac.dry_run = False
-        self.mac.reboot.required = 0
+        self.mac.reboot.required.clear()
 
         def fake_runcmd(cmd, *args, **kwargs):
             mock = MagicMock()
@@ -426,13 +434,12 @@ class TestMacOS(unittest.TestCase):
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
             patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd):
-            with patch.object(self.mac, 'check_staged_reboot'):
-                # Act
-                self.mac._update_os()
+            # Act
+            self.mac._update_os()
 
-                # Assert: reboot flagged and updates recorded
-                self.assertGreaterEqual(self.mac.reboot.required, 1)
-                self.assertTrue(self.mac._updates_performed)
+            # Assert: reboot flagged and updates recorded
+            self.assertTrue(self.mac.reboot.required)
+            self.assertTrue(self.mac._updates_performed)
 
     def test_update_os_failed_to_authenticate_triggers_notify(self):
         """Verifies _update_os alerts user via notify_manual_os_update when authentication fails."""
@@ -454,8 +461,7 @@ class TestMacOS(unittest.TestCase):
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
             patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
-            patch.object(mac, 'notify_manual_os_update') as mock_notify, \
-            patch.object(mac, 'check_staged_reboot'):
+            patch.object(mac, 'notify_manual_os_update') as mock_notify:
             # Act
             mac._update_os()
 
@@ -486,30 +492,19 @@ class TestMacOS(unittest.TestCase):
 
         with patch('freshenmac.computer.RunCMD', side_effect=fake_runcmd), \
             patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd) as mock_cmd:
-            with patch.object(self.mac, 'check_staged_reboot'):
-                # Act
-                self.mac._update_os()
+            # Act
+            self.mac._update_os()
 
-                # Assert: softwareupdate called with -d flag and options
-                mock_cmd.assert_any_call(
-                    ['softwareupdate', '-d', 'macOS Sequoia 15.8.1-24H32'],
-                    cancelable=True,
-                    debug=self.mac.debug_vars['debug'],
-                    debug_limit=self.mac.debug_vars['debug_limit'],
-                    taskpolicy=None,
-                    spinner=False,
-                    timeout=self.mac.timeout,
-                )
-
-    def test_xcode_property(self):
-        """Verifies xcode property creates and caches an Xcode instance with matching settings."""
-        # Arrange & Act
-        xcode_inst = self.mac.xcode
-
-        # Assert
-        self.assertIsInstance(xcode_inst, Xcode)
-        self.assertEqual(xcode_inst.dry_run, self.mac.dry_run)
-        self.assertEqual(xcode_inst.debug, self.mac.debug_vars['debug'])
+            # Assert: softwareupdate called with -d flag and options
+            mock_cmd.assert_any_call(
+                ['softwareupdate', '-d', 'macOS Sequoia 15.8.1-24H32'],
+                cancelable=True,
+                debug=self.mac.debug_vars['debug'],
+                debug_limit=self.mac.debug_vars['debug_limit'],
+                taskpolicy=None,
+                spinner=False,
+                timeout=self.mac.timeout,
+            )
 
 
 if __name__ == '__main__':

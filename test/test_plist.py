@@ -16,7 +16,6 @@ from freshenmac.plist import (
     get_file_build,
     load_preferences,
     parse_cron,
-    schedule_startup_run,
     uninstall_plist,
     update_installed_script,
 )
@@ -350,12 +349,12 @@ class TestLaunchAgent(unittest.TestCase):
         """Verifies parse_cron raises ValueError with helpful guidance when token count is invalid."""
         with self.assertRaises(ValueError) as ctx:
             parse_cron("0 6 *")
-        self.assertIn("expected 5 fields (minute hour day month weekday), got 3", str(ctx.exception))
+        self.assertIn("Got 3 of 5 expected fields (minute hour day month weekday)", str(ctx.exception))
         self.assertIn("Example: '0 18 * * 1' (Mondays at 6:00 PM)", str(ctx.exception))
 
         with self.assertRaises(ValueError) as ctx2:
             parse_cron("1 2 3 4 5 6")
-        self.assertIn("expected 5 fields (minute hour day month weekday), got 6", str(ctx2.exception))
+        self.assertIn("Got 6 of 5 expected fields (minute hour day month weekday)", str(ctx2.exception))
 
     def test_parse_cron_ranges(self):
         """Verifies parse_cron range syntax handling."""
@@ -791,11 +790,6 @@ class TestStartupRun(unittest.TestCase):
         with patch.object(Path, 'mkdir', side_effect=PermissionError("denied")):
             self.assertFalse(agent.schedule())
 
-    def test_schedule_startup_run_helper(self):
-        """Verifies schedule_startup_run delegates to StartupRun.schedule."""
-        with patch.object(StartupRun, 'schedule', return_value=True) as mock_sched:
-            self.assertTrue(schedule_startup_run(dry_run=True))
-            mock_sched.assert_called_once()
 
 
 if __name__ == '__main__':

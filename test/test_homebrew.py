@@ -219,6 +219,21 @@ class TestHomeBrew(unittest.TestCase):
         self.assertIn('real_outdated', outdated)
         self.assertEqual(outdated['real_outdated'], '1.0.0 ═▷ 1.1.0')
 
+    def test_reboot_pattern_ignores_service_restarts(self):
+        """Verifies PATTERN['Reboot'] matches system reboots but ignores service and shell restarts."""
+        from freshenmac.homebrew import PATTERN
+
+        # Should NOT match service caveats or shell restarts
+        self.assertIsNone(PATTERN['Reboot'].search("To restart nginx, run: brew services restart nginx"))
+        self.assertIsNone(PATTERN['Reboot'].search("Please restart your shell or terminal for changes to take effect."))
+        self.assertIsNone(PATTERN['Reboot'].search("Restart the service with launchctl."))
+
+        # SHOULD match actual system restart instructions
+        self.assertIsNotNone(PATTERN['Reboot'].search("A system reboot is required to finish installing."))
+        self.assertIsNotNone(PATTERN['Reboot'].search("Please reboot your Mac to load the kernel extension."))
+        self.assertIsNotNone(PATTERN['Reboot'].search("Restart is required for the new drivers."))
+        self.assertIsNotNone(PATTERN['Reboot'].search("A macOS restart is necessary."))
+
     def test_recover_rebase_aborts_locks(self):
         """Verifies _recover_rebase aborts active rebase and resets repository state."""
         # Arrange: create temporary repo directory with stuck rebase-merge lock
@@ -329,6 +344,19 @@ class TestHomeBrew(unittest.TestCase):
         # Act & Assert: warning completely stripped
         self.assertEqual(HomeBrew._strip_intel_warning(warning), "")
 
+        # Standalone Tier 3 configuration banner stripped
+        tier3_only = (
+            "This is a Tier 3 configuration:\n"
+            "  https://docs.brew.sh/Support-Tiers#tier-3\n"
+            "You can report issues with Tier 3 configurations to Homebrew/* repositories!\n\n"
+            "Read the above document before opening any issues or PRs.\n"
+        )
+        self.assertEqual(HomeBrew._strip_intel_warning(tier3_only), "")
+
+        # Separated warnings with error output between them
+        separated = f"{warning}\nError: build failed\n{tier3_only}"
+        self.assertEqual(HomeBrew._strip_intel_warning(separated), "Error: build failed")
+
         # Preserves legitimate errors appended after the warning
         error_output = f"{warning}\nError: Formula build failed with exit code 2"
         self.assertEqual(
@@ -342,6 +370,126 @@ class TestHomeBrew(unittest.TestCase):
             "Error: File not found",
         )
         self.assertEqual(HomeBrew._strip_intel_warning(""), "")
+
+    def test_truncate_lines(self):
+        """Verifies _truncate_lines preserves <= 7 lines and truncates > 7 lines with omitted count."""
+        # Empty text
+        self.assertEqual(HomeBrew._truncate_lines(""), "")
+
+        # <= 7 lines preserved in full
+        seven_lines = "\n".join(f"line {i}" for i in range(1, 8))
+        self.assertEqual(HomeBrew._truncate_lines(seven_lines), seven_lines)
+
+        three_lines = "line 1\nline 2\nline 3"
+        self.assertEqual(HomeBrew._truncate_lines(three_lines), three_lines)
+
+        # 8 lines: keeps first 3, last 3, and indicates 2 lines omitted
+        eight_lines = "\n".join(f"line {i}" for i in range(1, 9))
+        expected_8 = (
+            "line 1\nline 2\nline 3\n"
+            "... (2 lines omitted) ...\n"
+            "line 6\nline 7\nline 8"
+        )
+        self.assertEqual(HomeBrew._truncate_lines(eight_lines), expected_8)
+
+        # 10 lines: keeps first 3, last 3, and indicates 4 lines omitted
+        ten_lines = "\n".join(f"line {i}" for i in range(1, 11))
+        expected_10 = (
+            "line 1\nline 2\nline 3\n"
+            "... (4 lines omitted) ...\n"
+            "line 8\nline 9\nline 10"
+        )
+        self.assertEqual(HomeBrew._truncate_lines(ten_lines), expected_10)
+
+    def test_warning_truncates_long_error_output(self):
+        """Verifies _warning truncates error messages exceeding 7 lines."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        ten_lines = "\n".join(f"error line {i}" for i in range(1, 11))
+        with patch.object(brew, 'log') as mock_log:
+            brew._warning('upgrade', 'pkg', 1, ten_lines)
+            mock_log.assert_called_once()
+            log_msg = mock_log.call_args[0][0]
+            self.assertIn("... (4 lines omitted) ...", log_msg)
+            self.assertIn("error line 1", log_msg)
+            self.assertIn("error line 3", log_msg)
+            self.assertNotIn("error line 5", log_msg)
+            self.assertIn("error line 8", log_msg)
+            self.assertIn("error line 10", log_msg)
+
+    def test_upgrade_casks_warning_includes_cask_name(self):
+        """Verifies _upgrade_casks includes the cask name in warning on failure."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        mock_cmd = MagicMock()
+        mock_cmd.__bool__.return_value = False
+        mock_cmd.returncode = 1
+        mock_cmd.stderr = "Cask installation failed"
+
+        with patch('freshenmac.homebrew.RunCMD', return_value=mock_cmd), \
+            patch.object(brew, '_warning') as mock_warning:
+            brew._upgrade_casks({'google-chrome': '120.0 ═▷ 121.0'})
+            mock_warning.assert_called_once_with(
+                'upgrade --cask',
+                'google-chrome (120.0 ═▷ 121.0)',
+                1,
+                'Cask installation failed',
+            )
+
+    def test_resolve_and_update_dependencies_failure_short_circuits(self):
+        """Verifies failed dependency stops formula upgrade and skips parent build."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        brew.__dict__['brew_list'] = {}
+
+        def fake_runcmd(cmd, *args, **kwargs):
+            cmd_list = list(cmd)
+            mock = MagicMock()
+            if 'deps' in cmd_list:
+                mock.stdout = "dep_pkg\n"
+                mock.stderr = ""
+                mock.returncode = 0
+                mock.__bool__.return_value = True
+            elif 'install' in cmd_list:
+                mock.stdout = ""
+                mock.stderr = "Failed to install dep_pkg"
+                mock.returncode = 1
+                mock.__bool__.return_value = False
+            else:
+                mock.stdout = ""
+                mock.stderr = ""
+                mock.returncode = 0
+                mock.__bool__.return_value = True
+            mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
+            return mock
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
+            patch.object(brew.xcode, 'check_and_fix_license', return_value=False), \
+            patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')):
+
+            # _resolve_and_update_dependencies returns False
+            res = brew._resolve_and_update_dependencies('parent_formula')
+            self.assertFalse(res)
+
+            # _upgrade_formula short-circuits and returns False without running brew upgrade parent_formula
+            executed_cmds = []
+
+            def tracking_runcmd(cmd, *args, **kwargs):
+                executed_cmds.append(list(cmd))
+                return fake_runcmd(cmd, *args, **kwargs)
+
+            with patch('freshenmac.homebrew.RunCMD', side_effect=tracking_runcmd):
+                success = brew._upgrade_formula('parent_formula')
+                self.assertFalse(success)
+                self.assertFalse(any('parent_formula' in c and 'upgrade' in c for c in executed_cmds))
+
+            # _upgrade_cmake_formulae short-circuits without running brew upgrade parent_formula
+            executed_cmake_cmds = []
+
+            def tracking_cmake_runcmd(cmd, *args, **kwargs):
+                executed_cmake_cmds.append(list(cmd))
+                return fake_runcmd(cmd, *args, **kwargs)
+
+            with patch('freshenmac.homebrew.RunCMD', side_effect=tracking_cmake_runcmd):
+                brew._upgrade_cmake_formulae(['parent_formula'], {'parent_formula': '1.0 ═▷ 2.0'})
+                self.assertFalse(any('parent_formula' in c and 'upgrade' in c for c in executed_cmake_cmds))
 
     def test_update_brew_dry_run(self):
         """Verifies update performs no subprocess commands when dry_run is True."""
@@ -435,6 +583,7 @@ class TestHomeBrew(unittest.TestCase):
                 mock.stdout = '==> Upgrading qtbase'
             else:
                 mock.stdout = ''
+            mock.std_all = mock.stdout
             return mock
 
         with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \

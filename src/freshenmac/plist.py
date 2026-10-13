@@ -12,7 +12,7 @@ from typing import Any
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261010
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
@@ -205,6 +205,11 @@ class LaunchAgent(PrivilegedCMD):
         if schedule_cron:
             try:
                 self.cron_schedule = parse_cron(schedule_cron)
+            except ValueError as err:
+                self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
+                self._parse_error = True
+                return None
+
             except Exception:
                 pass
 
@@ -674,15 +679,14 @@ class SavePreferences(PrivilegedCMD):
             if self.SCHEMA[key]['type'] == 'list':
                 items = value.split() if isinstance(value, str) else [str(x) for x in value]
                 result[key] = list(dict.fromkeys(x.strip().lower() for x in items if x.strip()))
-            elif self.SCHEMA[key]['type'] == 'cron':
+            elif self.SCHEMA[key]['type'] == 'cron' and not isinstance(value, dict):
                 try:
-                    parse_cron(str(value))
+                    result[key] = parse_cron(str(value))
                 except ValueError as err:
                     self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
                     self._parse_error = True
                     return None
 
-                result[key] = str(value)
             else:
                 result[key] = value
         return result
@@ -711,7 +715,8 @@ class SavePreferences(PrivilegedCMD):
 
     def print_help(self) -> None:
         self.log.print(
-            f"\nFreshenMac Preferences:\n▷ {config.PATHS['Prefs']['Default']}\n▷ {config.PATHS['Prefs']['User']}\n",
+            f"\n{config.APP_INFO['Name']} Preferences:\n"
+            f"▷ {config.PATHS['Prefs']['Default']}\n▷ {config.PATHS['Prefs']['User']}\n",
         )
         a_line = f"    {'⠒' * 28}"
         help_display = [a_line]
@@ -731,6 +736,8 @@ class SavePreferences(PrivilegedCMD):
         if not self.updates:
             self.print_help()
             return not self._parse_error
+        if self.debug_vars['debug'] > 1:
+            self.log.print(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
 
         target_pref = config.PATHS['Prefs']['User'] if self.user_pref else config.PATHS['Prefs']['Default']
         prefs = load_preferences()
@@ -912,9 +919,9 @@ def parse_cron(expr: str) -> dict[str, int] | list[dict[str, int]]:
     values = expr.split()
     if len(values) != 5:
         raise ValueError(
-            f"Invalid cron expression '{expr}': expected 5 fields "
-            f"(minute hour day month weekday), got {len(values)}. "
-            f"Example: '0 18 * * 1' (Mondays at 6:00 PM)",
+            f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields "
+            f"Got {len(values)} of 5 expected fields (minute hour day month weekday).\n"
+            "\tExample: '0 18 * * 1' (Mondays at 6:00 PM)",
         )
 
     values = [star_int(x) for x in values]
@@ -943,11 +950,6 @@ def parse_cron(expr: str) -> dict[str, int] | list[dict[str, int]]:
             for j in range(stride):
                 cron_list[i * stride + j][k] = val
     return cron_list
-
-
-def schedule_startup_run(*, dry_run: bool = False, logger: Any | None = None) -> bool:
-    """Creates a one-shot LaunchAgent to rerun FreshenMac on next user login."""
-    return StartupRun(dry_run=dry_run, logger=logger).schedule()
 
 
 def uninstall_plist(

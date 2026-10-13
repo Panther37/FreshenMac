@@ -34,7 +34,7 @@ class TestAppStore(unittest.TestCase):
     def test_has_mas_dry_run_missing(self):
         """Verifies has_mas returns False in dry-run mode when binary is missing, without attempting brew install."""
         self.app_store.__dict__['mas_path'] = Path('')
-        with patch('freshenmac.mas.RunCMD') as mock_cmd:
+        with patch('freshenmac.mas.util.RunCMD') as mock_cmd:
             self.assertFalse(self.app_store.has_mas)
             mock_cmd.assert_not_called()
 
@@ -42,7 +42,7 @@ class TestAppStore(unittest.TestCase):
         """Verifies missing mas binary triggers 'brew install mas' in active run mode."""
         app_store = AppStore(brew_path=Path('/opt/homebrew/bin/brew'), dry_run=False)
         app_store.__dict__['mas_path'] = Path('')
-        with patch('freshenmac.mas.RunCMD') as mock_cmd:
+        with patch('freshenmac.mas.util.RunCMD') as mock_cmd:
             mock_cmd.return_value = make_cmd(errno=0)
             mock_cmd.return_value.__bool__ = lambda self: True
             with patch('freshenmac.mas.shutil.which', return_value='/opt/homebrew/bin/mas'):
@@ -75,7 +75,7 @@ class TestAppStore(unittest.TestCase):
         self.assertEqual(self.app_store.timeout, 1800)
         self.assertFalse(self.app_store.updates_performed)
         self.assertEqual(self.app_store.summary, {'installed': {}, 'unchanged': {}, 'updated': {}})
-        self.assertEqual(self.app_store.reboot.required, 0)
+        self.assertEqual(self.app_store.reboot.required, [])
 
     def test_mas_path_candidates(self):
         """Verifies resolution of mas binary relative to brew_path."""
@@ -88,7 +88,7 @@ class TestAppStore(unittest.TestCase):
         app_store = AppStore(dry_run=False)
         with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
             patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.RunCMD', return_value=make_cmd(stdout='')):
+            patch('freshenmac.mas.util.RunCMD', return_value=make_cmd(stdout='')):
             with patch.object(app_store.log, 'print_store') as mock_log:
                 app_store.update()
                 mock_log.assert_any_call("All App Store apps are up to date.", 'App Store')
@@ -97,7 +97,7 @@ class TestAppStore(unittest.TestCase):
         """Verifies update in dry-run mode logs intent without executing upgrade commands."""
         with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
             patch.object(self.app_store.log, 'print_store') as mock_log, \
-            patch('freshenmac.mas.RunCMD') as mock_cmd:
+            patch('freshenmac.mas.util.RunCMD') as mock_cmd:
             self.app_store.update()
             mock_log.assert_any_call("[Dry-run] Would check and update App Store apps.", 'App Store')
             mock_cmd.assert_not_called()
@@ -125,7 +125,8 @@ class TestAppStore(unittest.TestCase):
 
         with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
             patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd):
+            patch('freshenmac.mas.util.is_app_running', return_value=False), \
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd):
             app_store.update()
 
             # Verify ignored app was skipped, non-ignored was upgraded
@@ -137,18 +138,9 @@ class TestAppStore(unittest.TestCase):
 
     def test_update_skips_running_gui_app_and_schedules(self):
         """Verifies actively running GUI app update is deferred to next startup to avoid killing active work."""
-        scheduled = False
-
-        def fake_schedule():
-            nonlocal scheduled
-            scheduled = True
-            return True
-
         app_store = AppStore(
             dry_run=False,
-            is_app_running_fn=lambda name: name == 'Logic Pro',
             reboot=self.reboot,
-            schedule_fn=fake_schedule,
         )
         outdated_out = "634148309 Logic Pro (12.3 -> 12.3.1)"
 
@@ -159,12 +151,15 @@ class TestAppStore(unittest.TestCase):
 
         with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
             patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd) as mock_cmd:
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd) as mock_cmd, \
+            patch('freshenmac.mas.util.is_app_running', return_value=True), \
+            patch('freshenmac.plist.StartupRun.schedule', return_value=True) as mock_schedule:
             app_store.update()
 
-            # Must mark reboot required, schedule one-shot startup agent, and not invoke upgrade
-            self.assertEqual(self.reboot.required, 1)
-            self.assertTrue(scheduled)
+            # Must NOT mark reboot required, must record in defer.running, and schedule one-shot startup agent
+            self.assertFalse(self.reboot.required)
+            self.assertTrue(app_store.defer.running)
+            mock_schedule.assert_called_once()
             self.assertEqual(app_store.summary['unchanged']['Logic Pro'], '12.3 ═▷ 12.3.1')
             for call_args in mock_cmd.call_args_list:
                 args = call_args[0][0]
@@ -172,8 +167,7 @@ class TestAppStore(unittest.TestCase):
 
     def test_update_triggers_xcode_license_fix(self):
         """Verifies upgrading Xcode triggers an automated license agreement acceptance check."""
-        mock_xcode = MagicMock()
-        app_store = AppStore(dry_run=False, xcode=mock_xcode)
+        app_store = AppStore(dry_run=False)
         outdated_out = "497799835 Xcode (15.0 -> 15.1)"
 
         def fake_runcmd(cmd, *args, **kwargs):
@@ -185,9 +179,11 @@ class TestAppStore(unittest.TestCase):
 
         with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
             patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.RunCMD', side_effect=fake_runcmd):
+            patch('freshenmac.mas.util.is_app_running', return_value=False), \
+            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd), \
+            patch('freshenmac.mas.Xcode') as mock_xcode_cls:
             app_store.update()
-            mock_xcode.check_and_fix_license.assert_called_once()
+            mock_xcode_cls.return_value.check_and_fix_license.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -13,18 +13,23 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261012
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(
-        r"Warning: You are using macOS on Intel x86_64\..*?"
-        r"https://(?:www\.)?macports\.org/?\s*"
-        r"(?:This is a Tier 3 configuration:.*?"
-        r"Read the above document before opening any issues or PRs\.\s*)?",
+        r"(Warning: You are using macOS on Intel x86_64\..*?"
+        r"https://(?:www\.)?macports\.org/?\s*)|"
+        r"(This is a Tier 3 configuration:.*?"
+        r"Read the above document before opening any issues or PRs\.\s*)",
         re.DOTALL,
     ),
     'Rebase':        re.compile(r"rebase-merge|rebase-apply|in the middle of another rebase", re.IGNORECASE),
-    'Reboot':        re.compile(r"restart|reboot", re.IGNORECASE),
+    'Reboot':        re.compile(
+        r"(?:system|computer|macOS)\s+(?:reboot|restart)|"
+        r"(?:reboot|restart)\s+your\s+(?:mac|system|computer)|"
+        r"restart\s+is\s+required",
+        re.IGNORECASE,
+    ),
     'Xcode':         re.compile(
         r"xcodebuild\s+-license|Xcode license agreements|agreed to the.*Xcode",
         re.IGNORECASE,
@@ -49,7 +54,6 @@ class HomeBrew:
         reboot: RebootState | None = None,
         timeout: int = 1800,
         upgrade_timeout: int = TIMEOUT['Upgrade'],
-        xcode: Any | None = None,
     ) -> None:
         self.attempted_installs: set[str] = set()
         self.attempted_updates: set[str] = set()
@@ -60,11 +64,11 @@ class HomeBrew:
         self.dry_run = dry_run
         self.is_arm = bool(is_arm)
         self.logger = logger or Logger(dry_run=self.dry_run)
-        self.reboot = reboot or RebootState()
+        self.reboot = reboot if reboot is not None else RebootState()  # Checking existence
         self.timeout = timeout
         self.upgrade_timeout = upgrade_timeout
         self.updates_performed = False
-        self.xcode = xcode or Xcode(dry_run=self.dry_run, **self.debug_vars)
+        self.xcode = Xcode(dry_run=self.dry_run, **self.debug_vars)
         self._configure_environment()
 
     @staticmethod
@@ -242,24 +246,25 @@ class HomeBrew:
 
         return recovered
 
-    def _resolve_and_update_dependencies(self, formula: str, outdated_formulae: dict[str, str] | None = None) -> None:
+    def _resolve_and_update_dependencies(self, a_formula: str, outdated_formulae: dict[str, str] | None = None) -> bool:
         """
         Inspects dependencies for formula:
         1. Dependency NOT installed: installs dependency.
         2. Dependency installed and outdated: upgrades dependency first.
         3. Dependency installed and up to date: leaves it be.
+        :return: True if all dependencies were successfully resolved/updated, False otherwise.
         """
-        a_cmd = [str(self.brew_path), 'deps', '-n', '--include-build', formula]
+        a_cmd = [str(self.brew_path), 'deps', '-n', '--include-build', a_formula]
         deps_cmd = RunCMD(a_cmd, timeout=60, **self.debug_vars)
         if not deps_cmd or not deps_cmd.stdout.strip():
-            return
+            return True
 
         deps = [
             line.strip() for line in deps_cmd.stdout.splitlines()
             if line.strip() and not line.startswith(('Warning:', 'Hide these hints', 'This means'))
         ]
         if not deps:
-            return
+            return True
 
         installed_info = self.brew_list
         outdated = outdated_formulae if outdated_formulae is not None else {}
@@ -277,18 +282,19 @@ class HomeBrew:
                 already_ok.append(dep)
 
         for dep in already_ok:
-            self.logger.print(f"Dependency '{dep}' for '{formula}' is already installed and up to date.")
+            self.logger.print(f"Dependency '{dep}' for '{a_formula}' is already installed and up to date.")
         if to_update:
-            self.log(f"Dependencies for '{formula}' needing upgrade ({len(to_update)}):")
+            self.log(f"Dependencies for '{a_formula}' needing upgrade ({len(to_update)}):")
             for dep, ver_str in to_update:
                 self.logger.print(f"  • {dep} ({ver_str})")
         if to_install:
-            self.log(f"Dependencies for '{formula}' needing installation ({len(to_install)}):")
+            self.log(f"Dependencies for '{a_formula}' needing installation ({len(to_install)}):")
             for dep in to_install:
                 self.logger.print(f"  • {dep}")
 
+        success = True
         for dep, ver_str in to_update:
-            self.log(f"════ Upgrading outdated dependency {dep} ({ver_str}) (for {formula}) ════")
+            self.log(f"════ Upgrading outdated dependency {dep} ({ver_str}) (for {a_formula}) ════")
             cmd = RunCMD(
                 [str(self.brew_path), 'upgrade', '--yes', dep],
                 **self.cmd_options({'timeout': self.upgrade_timeout}),
@@ -302,9 +308,10 @@ class HomeBrew:
                 self.logger.store(f"Successfully upgraded dependency {dep} ({ver_str})", 'Homebrew')
             else:
                 self._warning('upgrade', dep, cmd.returncode, cmd.stderr)
+                success = False
 
         for dep in to_install:
-            self.log(f"════ Installing missing dependency {dep} (for {formula}) ════")
+            self.log(f"════ Installing missing dependency {dep} (for {a_formula}) ════")
             cmd = RunCMD(
                 [str(self.brew_path), 'install', '--yes', dep],
                 **self.cmd_options({'timeout': self.upgrade_timeout}),
@@ -327,6 +334,9 @@ class HomeBrew:
                 self.logger.store(f"Successfully installed dependency {dep}", 'Homebrew')
             else:
                 self._warning('install', dep, cmd.returncode, cmd.stderr)
+                success = False
+
+        return success
 
     @staticmethod
     def _strip_intel_warning(text: str) -> str:
@@ -336,11 +346,25 @@ class HomeBrew:
 
         return PATTERN['Intel Warning'].sub('', text).strip()
 
+    @staticmethod
+    def _truncate_lines(text: str, max_lines: int = 7, head: int = 3, tail: int = 3) -> str:
+        """Truncates multi-line text to head + omitted notice + tail if line count > max_lines."""
+        if not text:
+            return ''
+
+        lines = text.strip().splitlines()
+        if len(lines) <= max_lines:
+            return text.strip()
+
+        omitted = len(lines) - (head + tail)
+        truncated_lines = lines[:head] + [f"... ({omitted} lines omitted) ..."] + lines[-tail:]
+        return '\n'.join(truncated_lines)
+
     def _upgrade_casks(self, outdated_casks: dict[str, str]) -> None:
         """Upgrades outdated casks one at a time."""
         for c_name, ver in outdated_casks.items():
-            ver_str = f" ({ver})" if ver else ""
-            self.log(f"════ Upgrading cask {c_name}{ver_str} ════")
+            ver_str = f"{c_name} ({ver})" if ver else c_name
+            self.log(f"════ Upgrading cask {ver_str} ════")
             self.attempted_updates.add(c_name)
             try:
                 a_cmd = [str(self.brew_path), 'upgrade', '--cask', '--yes', c_name]
@@ -350,9 +374,9 @@ class HomeBrew:
                 elif cask_upgrade:
                     if '==> Upgrading' in cask_upgrade or '==> Installing' in cask_upgrade:
                         self.updates_performed = True
-                    self.logger.store(f"Successfully upgraded cask {c_name}{ver_str}", 'Homebrew')
+                    self.logger.store(f"Successfully upgraded cask {ver_str}", 'Homebrew')
                     if PATTERN['Reboot'].search(str(cask_upgrade)):
-                        self.reboot.suggested += 1
+                        self.reboot.suggested.append(f"Homebrew: Upgraded cask suggested a reboot: {ver_str}")
             except KeyboardInterrupt:
                 self.log(f"\n[Skipped] User canceled upgrade of cask '{c_name}'.")
                 continue
@@ -380,7 +404,10 @@ class HomeBrew:
         for key, value in cmake_dict.items():
             self.attempted_updates.add(key)
             try:
-                self._resolve_and_update_dependencies(key, outdated_formulae)
+                if not self._resolve_and_update_dependencies(key, outdated_formulae):
+                    self.log(f"[Skipped] Skipping upgrade of '{key}' because a required dependency failed to update.")
+                    continue
+
                 self.log(f"════ Upgrading {value} (requires cmake) ════")
                 a_cmd = [str(self.brew_path), 'upgrade', '--yes', key]
                 brew_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': self.upgrade_timeout}))
@@ -398,7 +425,7 @@ class HomeBrew:
                         self.updates_performed = True
                     self.logger.store(f"Successfully upgraded {value} (requires cmake)", 'Homebrew')
                     if PATTERN['Reboot'].search(brew_upgrade.stdout):
-                        self.reboot.suggested += 1
+                        self.reboot.suggested.append(f"Homebrew: Upgraded formula suggested a reboot: {value}")
             except KeyboardInterrupt:
                 self.log(f"\n[Skipped] User canceled upgrade of '{key}'.")
                 continue
@@ -412,7 +439,10 @@ class HomeBrew:
         """Upgrades a single formula, handling missing dependencies and Xcode license acceptance."""
         self.attempted_updates.add(formula)
         try:
-            self._resolve_and_update_dependencies(formula, outdated_formulae)
+            if not self._resolve_and_update_dependencies(formula, outdated_formulae):
+                self.log(f"[Skipped] Skipping upgrade of '{formula}' because a required dependency failed to update.")
+                return False
+
             formatted_ver = f"{formula} ({ver_str})" if ver_str else formula
             self.log(f"════ Upgrading {formatted_ver} ════")
             a_cmd = [str(self.brew_path), 'upgrade', '--yes', formula]
@@ -433,12 +463,11 @@ class HomeBrew:
                     self.updates_performed = True
                 self.logger.store(f"Successfully upgraded {formatted_ver}", 'Homebrew')
                 if PATTERN['Reboot'].search(brew_upgrade.stdout):
-                    self.reboot.suggested += 1
+                    self.reboot.suggested.append(f"Homebrew: Upgraded formula suggested a reboot: {formatted_ver}")
                 return True
 
         except KeyboardInterrupt:
             self.log(f"\n[Skipped] User canceled upgrade of '{formula}'.")
-            return False
 
         return False
 
@@ -450,7 +479,9 @@ class HomeBrew:
     def _warning(self, action: str, package: str, err_no: int = 0, err_msg: str = '') -> None:
         message = 'failed because the Xcode license agreement has not been accepted'
         if err_no:
-            message = f"exited with code {err_no}: {self._strip_intel_warning(err_msg)}".strip(': ')
+            cleaned = self._strip_intel_warning(err_msg)
+            truncated = self._truncate_lines(cleaned)
+            message = f"exited with code {err_no}: {truncated}".strip(': ')
         self.log(f"[Warning] 'brew {action} {package}' {message}.")
 
     @cached_property
@@ -547,8 +578,7 @@ class HomeBrew:
         # 1. Update Homebrew metadata
         u_cmd = [str(self.brew_path), 'update', '--force']
         update_cmd = RunCMD(u_cmd, **self.cmd_options())
-        update_output = update_cmd.std_all if isinstance(getattr(update_cmd, 'std_all', None), str) else ''
-        if (update_output and PATTERN['Rebase'].search(update_output)) or not update_cmd:
+        if (update_cmd.std_all and PATTERN['Rebase'].search(update_cmd.std_all)) or not update_cmd:
             self.log(
                 "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap. Self-healing...",
             )
@@ -562,6 +592,7 @@ class HomeBrew:
         outdated_formulae = self._get_outdated_formulae()
         outdated_casks = self._get_outdated_casks()
         cmake_formulae = self._get_cmake_formulae(outdated_formulae) if outdated_formulae else []
+        # # TODO: Only update Major and Minor versions of formulae that use cmake (unless something needs the Micro)
         if cmake_formulae:
             self._upgrade_cmake_formulae(cmake_formulae, outdated_formulae)
 

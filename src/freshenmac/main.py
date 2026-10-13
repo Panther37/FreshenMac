@@ -16,7 +16,7 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261010
 
 
 def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = None) -> bool:
@@ -30,9 +30,17 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
         vars(options).update(overrides)
     else:
         options = yield_arguments()
+        if options.debug > 1:
+            print(f"Arguments: {sys.argv}")
+            print(f"Options: {vars(options)}")
 
     if options.uninstall:
         return plist.uninstall_plist()
+
+    if options.schedule is None:
+        options.schedule = 'Help'
+    elif 'default' in options.schedule.lower():
+        options.schedule = DEFAULTS['schedule']
 
     if schedule := options.schedule:
         return plist.SavePreferences(
@@ -59,7 +67,7 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
 
     if util.is_interactive():
         if not util.RunCMD.can_sudo():
-            print("\nAdministrator privileges required for system maintenance. Priming sudo credentials...")
+            print("\nAdministrator privileges required for system maintenance.  Priming sudo credentials...")
             util.RunCMD(['sudo', '-v'], interactive=True, timeout=120)
         if sys.stdin and hasattr(sys.stdin, 'isatty') and sys.stdin.isatty():
             try:
@@ -70,8 +78,6 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
     with util.SudoKeepAlive():
         if options.debug > 1:
             print(f"Console user: {console_user}")
-            print(f"Arguments: {sys.argv}")
-            print(f"Options: {vars(options)}")
             return perform_updates(options, console_user, user_password)
 
         try:
@@ -152,7 +158,7 @@ def yield_arguments(some_args: list[str] | None = None):
 
     out_group = parser.add_argument_group(
         "Output Options",
-        "These options change the output to your terminal"
+        "These options change the output to your terminal",
     )
     out_group.add_argument(
         '-v', '--verbose', dest='debug', action='count', default=0,
@@ -177,25 +183,25 @@ def yield_arguments(some_args: list[str] | None = None):
 
     pref_group = parser.add_argument_group(
         "Preference Options",
-        "These options change your persistent preferences"
+        "These options change your persistent preferences",
     )
     pref_group.add_argument(
         '-s', '--save-prefs', nargs='?', const='', default=None,
         metavar='PREF',
         help=(
-            'Save a preference, e.g. "schedule=0 6 * * 1" or "no-mas=iPhoto 408981381". '
+            'Save a preference, e.g. "schedule=0 6 * * 1" or "no-mas=iPhoto 408981381".  '
             'Run with no value to see all options.'
         ),
     )
     pref_group.add_argument(
-        '--schedule', '--cron', dest='schedule', type=str, default=None,
+        '--schedule', '--cron', dest='schedule', nargs='?', type=str, default='',
         metavar='CRON',
         help='Set or update the LaunchAgent schedule using cron syntax (e.g. "0 6 * * 1" or "0 6 1,15 * *")',
     )
 
     boot_group = parser.add_argument_group(
         "Reboot Options",
-        "These options change if your computer is going to reboot or not.  Pick one, don't use them both."
+        "These options change if your computer is going to reboot or not.  Pick one, don't use them both.",
     )
     boot_group.add_argument(
         '-f', '--force-reboot', action='store_true', default=False,
@@ -218,7 +224,7 @@ def yield_arguments(some_args: list[str] | None = None):
 
     cli_group = parser.add_argument_group(
         "CLI Options",
-        "Options only available using the command line interface"
+        "Options only available using the command line interface",
     )
     cli_group.add_argument(
         '-i', '--ignore-mas', '--skip-mas', '--ignore-app-store', '--skip-app-store',

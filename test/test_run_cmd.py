@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from freshenmac.config import PATHS
 from freshenmac.util import (
+    RETURNCODE,
     Logger,
     PlaySound,
     RunAppleScript,
@@ -127,6 +128,38 @@ class TestLogging(unittest.TestCase):
                 mock_print.assert_called_once_with("Combined message")
             self.assertTrue(test_log.exists())
             self.assertIn('[Combo] Combined message', test_log.read_text(encoding='utf-8'))
+
+    def test_logger_store_blank_and_empty_quote_filtering(self):
+        """Verifies Logger.store filters empty lines and shell quotes while preserving symbol/indented lines."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_log = Path(tmp_dir) / 'test.log'
+            logger = Logger(log_file=test_log)
+
+            message = (
+                "line 1: regular text\n"
+                "\n"
+                "   \n"
+                "\t\n"
+                "''\n"
+                '""\n'
+                "[Warning] Some warning\n"
+                "  • bullet point\n"
+                "════ section header ════\n"
+            )
+            logger.store(message, component='FilterTest')
+
+            logged_content = test_log.read_text(encoding='utf-8')
+            lines = logged_content.splitlines()
+
+            # Should contain the 4 legitimate lines
+            self.assertEqual(len(lines), 4)
+            self.assertTrue(any('[FilterTest] line 1: regular text' in line for line in lines))
+            self.assertTrue(any('[FilterTest] [Warning] Some warning' in line for line in lines))
+            self.assertTrue(any('[FilterTest]   • bullet point' in line for line in lines))
+            self.assertTrue(any('[FilterTest] ════ section header ════' in line for line in lines))
+            # Should NOT contain empty lines or shell quotes
+            self.assertFalse(any("''" in line for line in lines))
+            self.assertFalse(any('""' in line for line in lines))
 
     def test_logger_stage2a_sudo_chmod_recovery(self):
         """Verifies stage 2a recovery attempts sudo touch && chmod 666 when write permission denied."""
@@ -394,12 +427,12 @@ class TestRunAppleScript(unittest.TestCase):
             self.assertTrue(res.background)
 
     def test_sync_run_exception(self):
-        """Verifies OSError during execution returns returncode -3 and sets error attribute."""
+        """Verifies OSError during execution returns returncode -70 and sets error attribute."""
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = OSError("Exec format error")
             ascript = RunAppleScript('broken')
             self.assertFalse(bool(ascript))
-            self.assertEqual(ascript.returncode, -3)
+            self.assertEqual(ascript.returncode, RETURNCODE['General'])
             self.assertIsInstance(ascript.error, OSError)
             self.assertIn("Exec format error", ascript.stderr)
 
@@ -436,12 +469,12 @@ class TestRunAppleScript(unittest.TestCase):
             )
 
     def test_sync_run_timeout(self):
-        """Verifies TimeoutExpired returns returncode -2 and records timeout in stderr."""
+        """Verifies TimeoutExpired returns returncode -80 and records timeout in stderr."""
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd=['osascript'], timeout=5)
             ascript = RunAppleScript('delay 10', timeout=5)
             self.assertFalse(bool(ascript))
-            self.assertEqual(ascript.returncode, -2)
+            self.assertEqual(ascript.returncode, RETURNCODE['Timeout'])
             self.assertIsInstance(ascript.error, subprocess.TimeoutExpired)
             self.assertIn('timed out', ascript.stderr)
 
@@ -472,18 +505,18 @@ class TestRunCMD(unittest.TestCase):
         # When running as non-root (euid == 501), delegates to RunCMD(['true'], need_root=True)
         with patch('os.geteuid', return_value=501):
             with patch('subprocess.run') as mock_sub:
-                mock_sub.return_value.returncode = 0
-                mock_sub.return_value.stdout = ''
-                mock_sub.return_value.stderr = ''
+                mock_sub.return_value = subprocess.CompletedProcess(
+                    args=['sudo', '-n', 'true'], returncode=0, stdout='', stderr=''
+                )
                 self.assertTrue(RunCMD.can_sudo())
                 mock_sub.assert_called_once()
                 args, _ = mock_sub.call_args
                 self.assertEqual(args[0], ['sudo', '-n', 'true'])
 
             with patch('subprocess.run') as mock_sub:
-                mock_sub.return_value.returncode = 1
-                mock_sub.return_value.stdout = ''
-                mock_sub.return_value.stderr = 'password required'
+                mock_sub.return_value = subprocess.CompletedProcess(
+                    args=['sudo', '-n', 'true'], returncode=1, stdout='', stderr='password required'
+                )
                 self.assertFalse(RunCMD.can_sudo())
                 mock_sub.assert_called_once()
                 args, _ = mock_sub.call_args
@@ -669,12 +702,14 @@ class TestRunCMD(unittest.TestCase):
         self.assertEqual(cmd.strip(), 'qos test')
 
     def test_timeout_handling(self):
-        """Verifies TimeoutExpired sets returncode -2 and records timeout message."""
+        """Verifies TimeoutExpired sets returncode -80 and records timeout message."""
         with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd=['sleep', '5'], timeout=1)):
             cmd = RunCMD(['sleep', '5'], timeout=1)
             self.assertFalse(bool(cmd))
-            self.assertEqual(cmd.returncode, -2)
+            self.assertEqual(cmd.returncode, RETURNCODE['Timeout'])
             self.assertIn('timed out', cmd.stderr)
+            self.assertIsNotNone(cmd.error_info)
+            self.assertEqual(cmd.error_info['timeout'], 1)
 
 
 class TestRunner(unittest.TestCase):
