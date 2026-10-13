@@ -3,13 +3,14 @@ from __future__ import annotations
 import plistlib
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from freshenmac import config, util
 from freshenmac.boot import RebootState
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261013
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Downloaded Ver':   re.compile(r"Downloaded:\s*(?:macOS\s+[A-Za-z]+\s+)?(?P<ver>\d+(?:\.\d+)+)"),
@@ -47,7 +48,7 @@ class SoftwareUpdate:
         self.os_ver: dict[str, util.Version | str] = {
             'Installed': util.parse_version(util.RunCMD(['sw_vers', '--productVersion']).strip()),
         }
-        self.reboot = reboot or RebootState()
+        self.reboot = reboot if reboot is not None else RebootState()  # Checking existence
         self.softwareupdate_list: util.RunCMD | None = None
         self.summary: dict[str, list[str]] = {'available': [], 'downloaded': []}
         self.timeout = timeout
@@ -103,7 +104,7 @@ class SoftwareUpdate:
         else:
             self.updates_performed = True
         if self.os_ver.get('Downloaded') > self.os_ver['Installed'] or 'Downloaded' in os_dl.std_all:
-            self.reboot.required += 1
+            self.reboot.required.append(f"macOS update: {self.os_ver['Installed']} ─▷ {self.os_ver.get('Downloaded')}")
 
     def _update_software(self, a_label: str) -> None:
         comp = 'macOS'
@@ -118,7 +119,7 @@ class SoftwareUpdate:
         if PATTERN['Restart Required'].search(output) or (
             self.softwareupdate_list and 'Action: restart' in self.softwareupdate_list.std_all
         ):
-            self.reboot.required += 1
+            self.reboot.required.append('Apple Software Updates')
         if 'Failed to authenticate' in output:
             self.summary['available'].append(a_label)
             if self.notify_manual_fn:
@@ -129,18 +130,32 @@ class SoftwareUpdate:
             self.updates_performed = True
             self.summary['downloaded'].append(a_label)
 
-    def check_staged_reboot(self) -> bool:
+    def check_staged_reboot(self) -> int:
         """Check /Library/Updates/index.plist for staged updates that require a reboot."""
         index_path = Path('/Library/Updates/index.plist')
-        if index_path.is_file():
-            try:
-                with open(index_path, 'rb') as a_file:
-                    data = plistlib.load(a_file)
-                    if data.get('InstallLater') or data.get('InstallAtLogout'):
-                        self.reboot.required += 1
-            except Exception:
-                pass
-        return bool(self.reboot.required)
+        if not index_path.is_file():
+            return 0
+
+        try:
+            with open(index_path, 'rb') as a_file:
+                data = plistlib.load(a_file)
+            verified_keys: set[str] = set()
+
+            if product_paths := data.get('ProductPaths'):
+                for key, path_str in product_paths.items():
+                    if path_str and Path(path_str).exists():
+                        verified_keys.add(str(key))
+
+            for key in ('InstallLater', 'InstallAtLogout'):
+                if items := data.get(key):
+                    for k in items:
+                        if isinstance(k, str) and (index_path.parent / k).is_dir():
+                            verified_keys.add(k)
+
+            return len(verified_keys)
+
+        except Exception:
+            return 0
 
     def cmd_options(self, update_options: dict | None = None) -> dict[str, Any]:
         """Common options dictionary for long-running system updates under utility QoS."""
@@ -232,11 +247,9 @@ class SoftwareUpdate:
 
             labels = PATTERN['SWU Label'].findall(self.softwareupdate_list.std_all)
             if not labels:
-                self.check_staged_reboot()
                 return
 
             for a_label in labels:
                 self._parse_a_label(a_label)
-            self.check_staged_reboot()
         except KeyboardInterrupt:
             self.log.print_store("\n[Skipped] User canceled macOS software update.", comp)

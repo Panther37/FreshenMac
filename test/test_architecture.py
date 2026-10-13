@@ -14,7 +14,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
 
     # Authoritative registry: mapping of module filenames to class names defined within each file
     FILES_AND_CLASSES = {
-        'boot.py':           ['Reboot', 'RebootState'],
+        'boot.py':           ['ActionState', 'DeferState', 'Reboot', 'RebootState'],
         'computer.py':       ['MacOS'],
         'homebrew.py':       ['HomeBrew'],
         'mas.py':            ['AppStore'],

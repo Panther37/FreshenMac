@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from freshenmac.boot import Reboot
+from freshenmac.boot import Reboot, RebootState
 from freshenmac.computer import MacOS
 from freshenmac.config import APP_INFO
 from freshenmac.util import RunCMD
@@ -581,6 +581,27 @@ class TestReboot(unittest.TestCase):
         # Excess idle time -> clamped to min_seconds
         with patch.object(MacOS, 'all_user_idle_time', new_callable=PropertyMock, return_value=4000):
             self.assertEqual(self.reboot.remaining_idle_time(min_seconds=10), 10)
+
+    def test_start_reboot_now(self):
+        """Verifies start_reboot triggers run_now_flow when prompt_initial returns 'now'."""
+        why = RebootState(required=['Update pending'])
+        with patch.object(self.reboot, 'prompt_initial', return_value='now'), \
+            patch.object(self.reboot, 'run_now_flow') as mock_now, \
+            patch.object(self.reboot, 'run_snooze_flow') as mock_snooze, \
+            patch.object(self.reboot, 'keep_awake'):
+            self.reboot.start_reboot(why)
+            mock_now.assert_called_once()
+            mock_snooze.assert_not_called()
+
+    def test_start_reboot_snooze(self):
+        """Verifies start_reboot triggers run_snooze_flow when prompt_initial returns 'snooze'."""
+        with patch.object(self.reboot, 'prompt_initial', return_value='snooze'), \
+            patch.object(self.reboot, 'run_now_flow') as mock_now, \
+            patch.object(self.reboot, 'run_snooze_flow') as mock_snooze, \
+            patch.object(self.reboot, 'keep_awake'):
+            self.reboot.start_reboot()
+            mock_snooze.assert_called_once()
+            mock_now.assert_not_called()
 
     def test_turn_off_escalation(self):
         """Verifies turn_off issues shutdown -h now via root RunCMD or elevated AppleScript."""

@@ -20,7 +20,15 @@ from typing import Any, IO
 
 from freshenmac import config
 
-FILE_BUILD = 20261006
+FILE_BUILD = 20261013
+PATTERN = {
+    'Word': re.compile(r"\w+"),
+}
+RETURNCODE = {
+    'Failed':  -65,
+    'General': -70,
+    'Timeout': -80,
+}
 
 
 class Logger:
@@ -136,7 +144,7 @@ class Logger:
         lines = message.splitlines() or [message]
         for line in lines:
             # Don't log empty lines
-            if not line.strip():
+            if not PATTERN['Word'].search(line):
                 continue
 
             self._write_line(f"[{timestamp}] [{comp}] {line}")
@@ -246,7 +254,7 @@ class RunAppleScript:
         if self.debug:
             self.debug_limit = None if int(self.debug_limit) <= 0 else self.debug_limit
         if isinstance(script, (list, tuple)):
-            script = '\n'.join(str(x) for x in script)
+            script = str_join(script, '\n')
         self.script = textwrap.dedent(str(script or '')).strip()
         self.run()
 
@@ -328,11 +336,11 @@ class RunAppleScript:
             self.returncode = result.returncode
         except subprocess.TimeoutExpired as timeout_err:
             self.error = timeout_err
-            self.returncode = -2
+            self.returncode = RETURNCODE['Timeout']
             self.stderr = f"AppleScript timed out after {self.timeout}s"
         except Exception as script_err:
             self.error = script_err
-            self.returncode = -3
+            self.returncode = RETURNCODE['General']
             self.stderr = str(script_err)
 
         if self.debug > 1:
@@ -387,6 +395,7 @@ class RunCMD:
         self.debug_limit = debug_limit
         self.download = download
         self.environ = environ or {}
+        self.error_info: dict[str, Any] | None = None
         self.initial_need_root = need_root
         self.interactive = interactive
         self.need_root = need_root
@@ -402,7 +411,7 @@ class RunCMD:
         if self.debug:
             self.debug_limit = None if int(self.debug_limit) <= 0 else self.debug_limit
         if taskpolicy is not None:
-            clamp = taskpolicy.strip().lower() if isinstance(taskpolicy, str) else None
+            clamp = taskpolicy.strip().lower()
             if clamp in ('maintenance', 'background', 'utility'):
                 self.cmd_args = self._prepend(['taskpolicy', '-c', clamp])
 
@@ -450,6 +459,25 @@ class RunCMD:
             self.need_root = False
             self.run()
 
+    def _get_output(self, a_subprocess: subprocess):
+        if isinstance(a_subprocess, subprocess.CompletedProcess):
+            self.stdout = a_subprocess.stdout or ''
+            self.stderr = a_subprocess.stderr or ''
+            self.returncode = a_subprocess.returncode
+            return
+
+        if isinstance(a_subprocess, subprocess.TimeoutExpired):
+            self.returncode = RETURNCODE['Timeout']
+        else:
+            self.returncode = RETURNCODE['General']
+        self.error_info = {
+            'cmd':        getattr(a_subprocess, 'cmd', None) or getattr(a_subprocess, 'args', None),
+            'stdout':     self._read_bytes(getattr(a_subprocess, 'stdout', None)),
+            'stderr':     self._read_bytes(getattr(a_subprocess, 'stderr', None)),
+            'timeout':    getattr(a_subprocess, 'timeout', None),
+            'returncode': getattr(a_subprocess, 'returncode', None),
+        }
+
     def _prepend(self, argument: str | list[str], a_cmd: list[str] | None = None) -> list[str]:
         """Prepend argument to the command"""
         a_cmd = a_cmd or self.cmd_args
@@ -460,6 +488,13 @@ class RunCMD:
 
         else:
             return argument + a_cmd
+
+    def _read_bytes(self, some_bytes: bytes):
+        """Convert bytes to string, handling potential encoding issues."""
+        if isinstance(some_bytes, bytes):
+            return some_bytes.decode('utf-8', errors='backslashreplace')
+
+        return str(some_bytes) if some_bytes else ''
 
     def _run_cmd(self, run_cmd_args: list[str], popen_env) -> None:
         try:
@@ -473,23 +508,24 @@ class RunCMD:
                 executable=self.shell_cmd,
                 env=popen_env,
             )
-            self.stdout = result.stdout or ''
-            self.stderr = result.stderr or ''
-            self.returncode = result.returncode
-        except subprocess.TimeoutExpired:
-            self.returncode = -2
-            self.stderr = f"Command timed out after {self.timeout}s: {run_cmd_args}"
+            self._get_output(result)
+        except subprocess.TimeoutExpired as err_timeout:
+            self.stderr = f"Command timed out after {self.timeout}s: {str_join(run_cmd_args)}"
+            self._get_output(err_timeout)
+        except subprocess.SubprocessError as err_subp:
+            self.stderr = f"General error running command: {str_join(run_cmd_args)}"
+            self._get_output(err_subp)
         except KeyboardInterrupt:
             if self.cancelable:
                 self.returncode = 130
                 self.canceled = True
-                self.stderr = f"Command canceled by user: {run_cmd_args}"
-                print(f"\n[Canceled] Skipped by user: {' '.join(str(x) for x in self.cmd_args)}")
+                self.stderr = f"Command canceled by user: {str_join(run_cmd_args)}"
+                print(f"\n[Canceled] Skipped by user: {str_join(self.cmd_args)}")
             else:
                 raise
 
         except Exception as err_msg_run:
-            self.returncode = -3
+            self.returncode = RETURNCODE['Failed']
             self.stderr = f"Unable to run command: {err_msg_run}\n\t{run_cmd_args}\n"
 
     @contextmanager
@@ -500,7 +536,7 @@ class RunCMD:
             yield None
             return
 
-        display_cmd = ' '.join(' '.join(str(a) for a in self.cmd_args).split())
+        display_cmd = ' '.join(str_join(self.cmd_args, strip=True).split())  # Seems redundand, removes \n
         with Wave(display_cmd, direction='right', persist=True) as spinner:
             yield spinner
 
@@ -523,7 +559,7 @@ class RunCMD:
         for some_line in self.stdout.splitlines():
             if delimiter in some_line:
                 some_split_line = some_line.split(delimiter, 1)
-                if self.debug:
+                if self.debug > 1:
                     print(some_split_line)
                 try:
                     a_key = some_split_line[0].strip()
@@ -538,7 +574,7 @@ class RunCMD:
                         f'\nThis line cannot be split into Key and Value with "{delimiter}"\n'
                         f'{some_split_line}\n{err_ind}\n',
                     )
-        if self.debug:
+        if self.debug > 0:
             print(json.dumps(some_dict, indent=2, ensure_ascii=False))
         return some_dict
 
@@ -552,7 +588,7 @@ class RunCMD:
             run_cmd_args = self._prepend(prefix, run_cmd_args)
         if self.environ:
             popen_env = {**os.environ, **self.environ}
-            if self.debug:
+            if self.debug > 1:
                 clean_environ = {}
                 for k, v in self.environ.items():
                     clean_environ[k] = f"Sensitive: {bool(v) if 'pass' in k.lower() else v}"
@@ -725,7 +761,7 @@ class Version:
         return self._key < other._key if isinstance(other, Version) else NotImplemented
 
     def __str__(self) -> str:
-        return self.raw or '.'.join(str(x) for x in self.parts)
+        return self.raw or str_join(self.parts, '.')
 
     @property
     def _key(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -752,7 +788,7 @@ class Version:
             return str(other).strip()
 
         if isinstance(other, (list, tuple)):
-            return '.'.join(str(x).strip() for x in other if x is not None)
+            return str_join(other, '.', skip_none=True, strip=True)
 
         if other is None:
             return '0'
@@ -921,9 +957,46 @@ def get_log_file() -> Path:
     return user_log
 
 
+def is_app_running(app_name: str, debug_vars: dict = {}) -> bool:
+    """Checks if an application is currently running on the system."""
+
+    if RunCMD(['pgrep', '-f', f"{app_name}.app"]):
+        return True
+
+    if RunCMD(['pgrep', '-x', app_name]):
+        return True
+
+    gui_cmd = RunAppleScript(
+        'tell application "System Events" to get name of every process whose background only is false',
+        **debug_vars,
+    )
+    if gui_cmd:
+        running_names = [name.strip().lower() for name in gui_cmd.stdout.split(',')]
+        if app_name.lower() in running_names:
+            return True
+
+    return False
+
+
 def is_interactive(stream: IO | None = sys.stdin) -> bool:
     return bool(stream and stream.isatty())
 
 
 def parse_version(version: Any) -> Version:
     return Version.parse(version)
+
+
+def str_join(
+    a_list: any,
+    joiner: str = ' ',
+    *,
+    skip_none: bool = False,
+    strip: bool = False,
+) -> str:
+    if skip_none:
+        a_list = [n for n in a_list if n is not None]
+    a_list = [str(x) for x in a_list]
+    if strip:
+        a_list = [s.strip() for s in a_list]
+
+    return joiner.join(a_list)

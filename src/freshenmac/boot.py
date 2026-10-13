@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -14,7 +15,34 @@ from freshenmac.config import APP_INFO, IDLE_THRESHOLD
 if TYPE_CHECKING:
     from freshenmac.computer import MacOS
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261013
+
+
+@dataclass
+class ActionState:
+    """
+    Pure data container holding action state flags.
+    Contains no execution logic or system side effects.
+    """
+
+    def __bool__(self) -> bool:
+        return any(getattr(self, x.name) for x in fields(self))
+
+    def __getitem__(self, item: str) -> Any:
+        return getattr(self, item.lower())
+
+    def __setitem__(self, item: str, value: Any) -> None:
+        attr = item.lower()
+        if hasattr(self, attr) and isinstance(value, list):
+            setattr(self, attr, value)
+        else:
+            raise KeyError(f"Invalid {self.__class__.__name__} key: {item}")
+
+
+@dataclass
+class DeferState(ActionState):
+    running: list[str] = field(default_factory=list)
+    error: list[str] = field(default_factory=list)
 
 
 class Reboot:
@@ -214,13 +242,25 @@ class Reboot:
             if self.dry_run:
                 break
 
-    def graceful_restart(self) -> None:
-        """Attempts a standard graceful restart via System Events, first auto-saving documents."""
+    def graceful_restart(self) -> bool:
+        """
+        Attempts a standard graceful restart via System Events, first auto-saving documents.
+        :return: Should the script continue with restart
+        """
         if self.dry_run:
             self.log('[Dry-run] Would auto-save open documents and attempt authrestart / System Events restart')
-            return
+            return True
 
-        # 1. Tell scriptable apps to cleanly save existing open documents
+        # 1. Check FileVault authrestart first
+        if self.computer.filevault_enabled:
+            if not self.attempt_authrestart():
+                self.log(
+                    'FileVault is active and authrestart credentials unavailable.  '
+                    'Leaving computer ON to avoid unauthenticated pre-boot timeout and shutdown.',
+                )
+                return False
+
+        # 2. Tell scriptable apps to cleanly save existing open documents
         save_script = [
             'tell application "System Events"',
             '    set appList to (name of every process whose background only is false and name is not "Finder")',
@@ -232,22 +272,7 @@ class Reboot:
             'end repeat',
         ]
         util.RunAppleScript(save_script, timeout=30, **self.debug_vars)
-
-        # 2. Check FileVault authrestart first
-        if self.computer.filevault_enabled:
-            if not self.attempt_authrestart():
-                self.log(
-                    'FileVault is active and authrestart credentials unavailable. '
-                    'Leaving computer ON to avoid unauthenticated pre-boot timeout and shutdown.',
-                )
-                # Standard/forced restart commented out to prevent machine from stalling at
-                # FileVault pre-boot and powering off:
-                # util.RunCMD(['shutdown', '-r', 'now'], need_root=True, **self.debug_vars)
-                # util.RunAppleScript('tell application "System Events" to restart', **self.debug_vars)
-                return
-
-        else:
-            util.RunAppleScript('tell application "System Events" to restart', **self.debug_vars)
+        return bool(util.RunAppleScript('tell application "System Events" to restart', **self.debug_vars))
 
     @contextmanager
     def keep_awake(self):
@@ -393,7 +418,7 @@ class Reboot:
         if 'gave up:true' in dialog_cmd or self.computer.is_idle:
             self.log(
                 f"Prompt timed out and user has been idle for >= {IDLE_THRESHOLD['Minutes']} minutes.  "
-                f"Automatically selecting 'Restart Now'.",
+                "Automatically selecting 'Restart Now'.",
             )
             return 'now'
 
@@ -473,7 +498,9 @@ class Reboot:
         """
         for attempt in range(self.max_now_attempts):
             self.log(f"Starting graceful restart (attempt {attempt + 1}/{self.max_now_attempts})...")
-            self.graceful_restart()
+            if not self.graceful_restart():
+                return
+
             # Wait IDLE_THRESHOLD['Reboot Wait'] seconds to check if computer is still up
             self._sleep(IDLE_THRESHOLD['Reboot Wait'])
             # If still running, prompt user
@@ -534,8 +561,12 @@ class Reboot:
                 self.run_now_flow()
                 return
 
-    def start(self) -> None:
+    def start_reboot(self, why_reboot: RebootState | None = None) -> None:
         """Entry point for the reboot workflow.  Wrapped with caffeinate to prevent sleep."""
+        print_why = ''
+        if why_reboot:
+            print_why = json.dumps({k: ', '.join(v) for k, v in asdict(why_reboot).items() if v}, indent=2)
+        self.log(f"Starting reboot workflow...\n{print_why}")
         with self.keep_awake():
             choice = self.prompt_initial()
             if choice == 'now':
@@ -559,22 +590,7 @@ class Reboot:
 
 
 @dataclass
-class RebootState:
-    """
-    Pure data container holding reboot state flags.
-    Contains no execution logic or system side effects.
-    """
-    reason: str | None = None
-    requested: int = 0
-    required: int = 0
-    suggested: int = 0
-
-    def __getitem__(self, item: str) -> Any:
-        return getattr(self, item.lower())
-
-    def __setitem__(self, item: str, value: Any) -> None:
-        attr = item.lower()
-        if hasattr(self, attr):
-            setattr(self, attr, value)
-        else:
-            raise KeyError(f"Invalid RebootState key: {item}")
+class RebootState(ActionState):
+    requested: list[str] = field(default_factory=list)
+    required: list[str] = field(default_factory=list)
+    suggested: list[str] = field(default_factory=list)

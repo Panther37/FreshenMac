@@ -18,59 +18,55 @@ class TestRebootState(unittest.TestCase):
         self.assertFalse(bool(state.required))
         self.assertFalse(bool(state.requested))
         self.assertFalse(bool(state.suggested))
+        self.assertFalse(bool(state))
 
         # Act & Assert: Incrementing required counter makes it truthy
-        state.required += 1
+        state.required.append('Update')
         self.assertTrue(bool(state.required))
+        self.assertTrue(bool(state))
 
         # Act & Assert: Incrementing suggested counter makes it truthy
-        state.suggested += 2
+        state.suggested.append('Cask')
         self.assertTrue(bool(state.suggested))
 
     def test_default_values(self):
         """Verifies default initialization values for counters and reason string."""
         state = RebootState()
-        self.assertEqual(state.required, 0)
-        self.assertEqual(state.requested, 0)
-        self.assertEqual(state.suggested, 0)
-        self.assertIsNone(state.reason)
+        self.assertEqual(state.required, [])
+        self.assertEqual(state.requested, [])
+        self.assertEqual(state.suggested, [])
 
     def test_getitem_case_insensitive(self):
         """Verifies dictionary lookup by key handles uppercase, lowercase, and titlecase keys."""
-        state = RebootState(required=2, requested=1, suggested=3, reason="Test")
+        state = RebootState(required=['A', 'B'], requested=['C'], suggested=['D', 'E', 'F'])
 
         # Dictionary access should normalize key names to lowercase internally
-        self.assertEqual(state['required'], 2)
-        self.assertEqual(state['REQUIRED'], 2)
-        self.assertEqual(state['Requested'], 1)
-        self.assertEqual(state['suggested'], 3)
-        self.assertEqual(state['reason'], "Test")
+        self.assertEqual(state['required'], ['A', 'B'])
+        self.assertEqual(state['REQUIRED'], ['A', 'B'])
+        self.assertEqual(state['Requested'], ['C'])
+        self.assertEqual(state['suggested'], ['D', 'E', 'F'])
 
     def test_setitem_invalid_key(self):
         """Verifies KeyError is raised when assigning to an unrecognized key."""
         state = RebootState()
         with self.assertRaises(KeyError):
-            state['nonexistent_key'] = 123
+            state['nonexistent_key'] = ['123']
 
     def test_setitem_valid_keys(self):
         """Verifies dictionary assignment updates counters and reason with case-insensitivity."""
         state = RebootState()
 
         # Assignment via lowercase key
-        state['required'] = 1
-        self.assertEqual(state.required, 1)
+        state['required'] = ['OS Update']
+        self.assertEqual(state.required, ['OS Update'])
 
-        # In-place increment via attribute
-        state['required'] += 1
-        self.assertEqual(state.required, 2)
+        # In-place append via attribute
+        state.required.append('App Update')
+        self.assertEqual(state.required, ['OS Update', 'App Update'])
 
         # Assignment via uppercase key
-        state['SUGGESTED'] = 5
-        self.assertEqual(state.suggested, 5)
-
-        # String assignment for reason
-        state['reason'] = "Updates applied"
-        self.assertEqual(state.reason, "Updates applied")
+        state['SUGGESTED'] = ['Cask 1', 'Cask 2']
+        self.assertEqual(state.suggested, ['Cask 1', 'Cask 2'])
 
 
 if __name__ == '__main__':

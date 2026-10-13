@@ -63,11 +63,13 @@ class TestSoftwareUpdate(unittest.TestCase):
 
     def test_check_staged_reboot(self):
         """Verifies detection of staged macOS updates waiting for logout/reboot in /Library/Updates/index.plist."""
-        # Arrange: Create simulated index.plist with InstallLater flag
+        # Arrange: Create simulated index.plist with verified payload directory
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_index = Path(temp_dir) / 'index.plist'
+            payload_dir = Path(temp_dir) / '001-12345'
+            payload_dir.mkdir()
             with open(fake_index, 'wb') as f:
-                plistlib.dump({'InstallLater': True}, f)
+                plistlib.dump({'InstallLater': ['001-12345']}, f)
 
             # Act: Mock Path to point /Library/Updates lookups to our temporary index.plist
             with patch(
@@ -78,9 +80,57 @@ class TestSoftwareUpdate(unittest.TestCase):
             ):
                 res = self.swu.check_staged_reboot()
 
-                # Assert: Required reboot count incremented to signal pending update
-                self.assertTrue(res)
-                self.assertGreaterEqual(self.reboot.required, 1)
+                # Assert: Returns count 1 without mutating self.reboot.required (pure query)
+                self.assertEqual(res, 1)
+                self.assertEqual(self.reboot.required, [])
+
+    def test_check_staged_reboot_multiple_payloads(self):
+        """Verifies check_staged_reboot returns exact count when multiple distinct payloads exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_index = Path(temp_dir) / 'index.plist'
+            payload_dir1 = Path(temp_dir) / '001-12345'
+            payload_dir1.mkdir()
+            payload_pkg2 = Path(temp_dir) / '002-67890.pkg'
+            payload_pkg2.touch()
+
+            with open(fake_index, 'wb') as f:
+                plistlib.dump({
+                    'InstallLater': ['001-12345'],
+                    'ProductPaths': {'002-67890': str(payload_pkg2)},
+                }, f)
+
+            with patch(
+                'freshenmac.softwareupdate.Path',
+                side_effect=lambda *args, **kwargs: fake_index if any(
+                    '/Library/Updates' in str(a) for a in args
+                ) else Path(*args, **kwargs),
+            ):
+                res = self.swu.check_staged_reboot()
+
+                self.assertEqual(res, 2)
+                self.assertEqual(self.reboot.required, [])
+
+    def test_check_staged_reboot_orphaned_key_ignored(self):
+        """Verifies orphaned product keys in InstallLater without payloads on disk return 0."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_index = Path(temp_dir) / 'index.plist'
+            with open(fake_index, 'wb') as f:
+                plistlib.dump({
+                    'InstallAtLogout': [],
+                    'InstallLater': ['142-23583'],
+                    'ProductPaths': {},
+                }, f)
+
+            with patch(
+                'freshenmac.softwareupdate.Path',
+                side_effect=lambda *args, **kwargs: fake_index if any(
+                    '/Library/Updates' in str(a) for a in args
+                ) else Path(*args, **kwargs),
+            ):
+                res = self.swu.check_staged_reboot()
+
+                self.assertEqual(res, 0)
+                self.assertEqual(self.reboot.required, [])
 
     def test_init_defaults(self):
         """Verifies default values upon initialization."""
@@ -88,7 +138,7 @@ class TestSoftwareUpdate(unittest.TestCase):
         self.assertEqual(self.swu.timeout, 1800)
         self.assertFalse(self.swu.updates_performed)
         self.assertEqual(self.swu.summary, {'available': [], 'downloaded': []})
-        self.assertEqual(self.swu.reboot.required, 0)
+        self.assertEqual(self.swu.reboot.required, [])
 
     def test_notify_manual_dry_run(self):
         """Verifies notify_manual in dry-run mode skips opening settings and dialogs."""
@@ -141,7 +191,7 @@ class TestSoftwareUpdate(unittest.TestCase):
         with patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
             patch.object(self.swu, 'check_staged_reboot'):
             self.swu.update()
-            self.assertGreaterEqual(self.reboot.required, 1)
+            self.assertTrue(self.reboot.required)
             self.assertTrue(self.swu.updates_performed)
             self.assertIn('Safari18.0-24H123', self.swu.summary['downloaded'])
 
@@ -167,7 +217,7 @@ class TestSoftwareUpdate(unittest.TestCase):
         with patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
             patch.object(self.swu, 'check_staged_reboot'):
             self.swu.update()
-            self.assertEqual(self.reboot.required, 1)
+            self.assertTrue(self.reboot.required)
             self.assertTrue(self.swu.updates_performed)
             self.assertIn('macOS Sequoia 15.8.1-24H32', self.swu.summary['downloaded'])
             self.assertEqual(str(self.swu.os_ver['Downloaded']), '15.8.1')

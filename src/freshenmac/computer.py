@@ -14,9 +14,8 @@ from freshenmac.homebrew import HomeBrew
 from freshenmac.mas import AppStore
 from freshenmac.softwareupdate import SoftwareUpdate
 from freshenmac.util import Logger, RunCMD
-from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261013
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Boot Time': re.compile(r"sec = (?P<epoch>\d+)"),
@@ -29,6 +28,8 @@ class MacOS:
     Host computer orchestrator. Manages system facts and coordinates
     HomeBrew, AppStore, SoftwareUpdate, Xcode, and Reboot workflows.
     """
+
+    SUG_REBOOT_STR = 'Suggested updates and over uptime threshold'
 
     def __init__(
         self,
@@ -51,24 +52,24 @@ class MacOS:
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.mas_timeout = mas_timeout
-        self.reboot = RebootState(required=int(force_reboot))
+        self.reboot = RebootState()
         self.timeout = timeout
         self.upgrade_timeout = upgrade_timeout
         self.user_password = user_password
 
-        # Instantiate workers
+        if force_reboot:
+            self.reboot.required.append('Command-Line Override')
+
+        # Initialize workers
         self.app_store = AppStore(
             brew_path=self.brew.brew_path,
             debug=debug,
             debug_limit=debug_limit,
             dry_run=self.dry_run,
             ignore_mas=ignore_mas,
-            is_app_running_fn=lambda app: self.is_app_running(app),
             logger=self.log,
             reboot=self.reboot,
-            schedule_fn=lambda: self.schedule_startup_run(),
             timeout=self.mas_timeout,
-            xcode=self.xcode,
         )
         self.softwareupdate = SoftwareUpdate(
             arm_installed=self.arm_installed,
@@ -159,30 +160,32 @@ class MacOS:
             reboot=self.reboot,
             timeout=self.timeout,
             upgrade_timeout=self.upgrade_timeout,
-            xcode=self.xcode,
             **self.debug_vars,
         )
 
     def check_and_reboot(self) -> None:
         """Checks reboot status and launches Reboot workflow if required or suggested."""
         self.check_reboot_status()
-        if self.reboot.required or self.reboot.suggested:
+        if self.reboot.required or self.SUG_REBOOT_STR in self.reboot.suggested:
+            self.log.print_store(f"Reboot {'required' if self.reboot.required else 'suggested'}", 'Reboot')
             rebooter = Reboot(self, dry_run=self.dry_run, logger=self.log, **self.debug_vars)
-            rebooter.start()
+            rebooter.start_reboot(self.reboot)
         else:
             self.log.print_store("No reboot required or suggested.", 'Reboot')
 
     def check_reboot_status(self) -> RebootState:
         """Refreshes and returns the current reboot status dataclass."""
-        self.check_staged_reboot()
-        if self._updates_performed and self.uptime_days >= config.IDLE_THRESHOLD['Uptime in Days']:
-            if not self.reboot.suggested:
-                self.reboot.suggested += 1
+        if num_staged := self.softwareupdate.check_staged_reboot():
+            self.reboot.required.append(
+                f"Staged Apple Software Update{'s' if num_staged != 1 else ''} ({num_staged})",
+            )
+        if self._updates_performed and self.uptime_days > config.IDLE_THRESHOLD['Uptime in Days']:
+            if self.SUG_REBOOT_STR not in self.reboot.suggested:
+                self.reboot.suggested.append(
+                    f"Uptime: {self.uptime_days} > {config.IDLE_THRESHOLD['Uptime in Days']}",
+                )
+                self.reboot.suggested.append(self.SUG_REBOOT_STR)
         return self.reboot
-
-    def check_staged_reboot(self) -> bool:
-        """Check /Library/Updates/index.plist for staged updates that require a reboot."""
-        return self.softwareupdate.check_staged_reboot()
 
     @staticmethod
     def cleanup_startup_run() -> bool:
@@ -225,28 +228,6 @@ class MacOS:
         output = hid_cmd.stdout if hasattr(hid_cmd, 'stdout') else str(hid_cmd)
         match = PATTERN['Idle Time'].search(output)
         return 0 if not match else int(match.group('ns')) // int(1e9)
-
-    def is_app_running(self, app_name: str) -> bool:
-        """Checks if an application is currently running on the system."""
-        if not self.is_mac:
-            return False
-
-        if RunCMD(['pgrep', '-f', f"{app_name}.app"]):
-            return True
-
-        if RunCMD(['pgrep', '-x', app_name]):
-            return True
-
-        gui_cmd = util.RunAppleScript(
-            'tell application "System Events" to get name of every process whose background only is false',
-            **self.debug_vars,
-        )
-        if gui_cmd:
-            running_names = [name.strip().lower() for name in gui_cmd.stdout.split(',')]
-            if app_name.lower() in running_names:
-                return True
-
-        return False
 
     @property
     def is_idle(self) -> bool:
@@ -370,10 +351,6 @@ class MacOS:
                 f"[Software Update] To install macOS {self.softwareupdate.os_ver['Label']}:\n  {install_cmd.std_all}",
             )
 
-    def schedule_startup_run(self) -> bool:
-        """Creates a one-shot LaunchAgent to rerun FreshenMac on next user login."""
-        return plist.schedule_startup_run(dry_run=self.dry_run, logger=self.log)
-
     @cached_property
     def supports_authrestart(self) -> bool:
         """Check if machine supports fdesetup authrestart to reboot past FileVault."""
@@ -411,8 +388,3 @@ class MacOS:
         boottime_cmd = RunCMD(['sysctl', '-n', 'kern.boottime'])
         match = PATTERN['Boot Time'].search(boottime_cmd.stdout)
         return int(time.time()) - int(match.group('epoch')) if match else 0
-
-    @cached_property
-    def xcode(self) -> Any:
-        """Xcode management instance for checking and fixing Xcode tools and license."""
-        return Xcode(dry_run=self.dry_run, **self.debug_vars)

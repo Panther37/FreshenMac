@@ -4,13 +4,12 @@ import re
 import shutil
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from freshenmac import config, plist
-from freshenmac.boot import RebootState
-from freshenmac.util import Logger, RunCMD, is_interactive
+from freshenmac import boot, config, plist, util
+from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261012
 PATTERN_MAS_UPDATE = re.compile(r"^\s*(?P<id>\d+)\s+(?P<name>.+?)\s+(?P<vers>\([^)]+\))")
 
 
@@ -23,35 +22,24 @@ class AppStore:
         brew_path: Path | None = None,
         debug: int = 0,
         debug_limit: int = 0,
+        defer: boot.DeferState | None = None,
         dry_run: bool = False,
         ignore_mas: list[str] | set[str] | None = None,
-        is_app_running_fn: Callable[[str], bool] | None = None,
         logger: Any | None = None,
-        reboot: RebootState | None = None,
-        schedule_fn: Callable[[], bool] | None = None,
+        reboot: boot.RebootState | None = None,
         timeout: int = config.TIMEOUT['App Store'],
-        xcode: Any | None = None,
     ) -> None:
-        """
-        :param is_app_running_fn: Callable callback function ('fn' = function) passed from
-            MacOS coordinator (MacOS.is_app_running) to determine whether a given GUI
-            application is currently active on the desktop before attempting an in-place upgrade.
-        :param schedule_fn: Callable callback passed from MacOS coordinator
-            (MacOS.schedule_startup_run) to register a one-shot startup LaunchAgent when
-            running apps must be deferred to next boot.
-        """
+
         self._cli_ignore = set(ignore_mas) if ignore_mas else set()
         self.brew_path = brew_path
         self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.defer = defer if defer is not None else boot.DeferState()  # Checking existence
         self.dry_run = dry_run
-        self.is_app_running_fn = is_app_running_fn
-        self.log = logger or Logger(dry_run=self.dry_run)
-        self.reboot = reboot or RebootState()
-        self.schedule_fn = schedule_fn
+        self.log = logger or util.Logger(dry_run=self.dry_run)
+        self.reboot = reboot if reboot is not None else boot.RebootState()  # Checking existence
         self.summary: dict[str, dict[str, str]] = {'installed': {}, 'unchanged': {}, 'updated': {}}
         self.timeout = timeout
         self.updates_performed = False
-        self.xcode = xcode
 
     def cmd_options(self, update_options: dict | None = None) -> dict[str, Any]:
         """Common options dictionary for long-running App Store updates under utility QoS."""
@@ -72,7 +60,7 @@ class AppStore:
             if self.dry_run or not self.brew_path:
                 return False
 
-            if RunCMD([str(self.brew_path), 'install', 'mas'], **self.cmd_options()):
+            if util.RunCMD([str(self.brew_path), 'install', 'mas'], **self.cmd_options()):
                 self.__dict__.pop('mas_path', None)
         return self.mas_path != Path('')
 
@@ -128,7 +116,7 @@ class AppStore:
             self.log.print_store("[Dry-run] Would check and update App Store apps.", comp)
             return
 
-        outdated_cmd = RunCMD([str(self.mas_path), 'outdated'], timeout=60)
+        outdated_cmd = util.RunCMD([str(self.mas_path), 'outdated'], timeout=60)
         if not outdated_cmd or not outdated_cmd.stdout.strip():
             self.log.print_store("All App Store apps are up to date.", comp)
             return
@@ -155,17 +143,18 @@ class AppStore:
             if app_id in self.ignored_apps or app_name.lower() in self.ignored_apps:
                 self.log.print_store(f"  [Skipping] '{app_name}' ({app_id}) is in Ignore MAS preferences.", comp)
                 self.summary['unchanged'][app_name] = version_info or 'ignored'
-            elif self.is_app_running_fn and self.is_app_running_fn(app_name):
+            elif util.is_app_running(app_name, self.debug_vars):
                 has_running_app = True
+                self.defer.running.append(f"App Store Update: {app_name} is running, cannot update.")
                 self.log.print_store(f"  [Skipping] '{app_name}' is currently running on the GUI.", comp)
                 self.summary['unchanged'][app_name] = version_info or 'deferred (running)'
             else:
                 updatable_apps.append((app_id, app_name, version_info))
 
         if has_running_app:
-            self.reboot.required += 1
-            if self.schedule_fn:
-                self.schedule_fn()
+            # # TODO: App is running and cannot update, schedule to try again after next reboot
+            if not plist.StartupRun(dry_run=self.dry_run, logger=self.log).schedule():
+                self.log.print_store("Failed to schedule deferred App Store updates.", comp)
 
         if not updatable_apps:
             if has_running_app:
@@ -174,18 +163,18 @@ class AppStore:
                 self.log.print_store("No remaining App Store updates to install.", comp)
             return
 
-        if not RunCMD.can_sudo():
-            interactive_shell = is_interactive()
+        if not util.RunCMD.can_sudo():
+            interactive_shell = util.is_interactive()
             if interactive_shell:
                 self.log.print(
                     f"\n[Permission Required] Administrator privileges needed to update "
                     f"{len(updatable_apps)} App Store app{'s' if len(updatable_apps) != 1 else ''}:\n"
                     "Prompting for sudo password...\n",
                 )
-                RunCMD(['sudo', '-v'], interactive=True, timeout=120)
+                util.RunCMD(['sudo', '-v'], interactive=True, timeout=120)
             else:
                 fail_str = (
-                    "[Warning] Sudo credentials unavailable for unattended App Store update. "
+                    "[Warning] Sudo credentials unavailable for unattended App Store update.  "
                     "Skipping 'mas' upgrade to avoid stalling."
                 )
                 self.log.print_store(fail_str, comp)
@@ -194,7 +183,7 @@ class AppStore:
         for app_id, app_name, version_info in updatable_apps:
             self.log.print_store(f"════ Updating {app_name} ({app_id}) ════", comp)
             try:
-                mas_upgrade = RunCMD(
+                mas_upgrade = util.RunCMD(
                     [str(self.mas_path), 'upgrade', app_id],
                     **self.cmd_options(),
                 )
@@ -209,8 +198,8 @@ class AppStore:
                     self.updates_performed = True
                     self.summary['updated'][app_name] = version_info or 'updated'
                     self.log.store(f"Successfully updated {app_name} ({app_id})", comp)
-                    if self.xcode and ('xcode' in app_name.lower() or app_id == '497799835'):
-                        self.xcode.check_and_fix_license()
+                    if 'xcode' in app_name.lower() or app_id == '497799835':
+                        Xcode(dry_run=self.dry_run, **self.debug_vars).check_and_fix_license()
                 else:
                     self.summary['unchanged'][app_name] = version_info or 'already up to date'
             except KeyboardInterrupt:
