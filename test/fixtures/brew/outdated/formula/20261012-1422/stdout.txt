@@ -1,0 +1,383 @@
+{
+  "formulae": [
+    {
+      "name": "gobject-introspection",
+      "installed_versions": [
+        "1.86.0_3"
+      ],
+      "current_version": "1.86.0_4",
+      "pinned": false,
+      "pinned_version": null
+    },
+    {
+      "name": "harfbuzz",
+      "installed_versions": [
+        "14.5.1"
+      ],
+      "current_version": "14.6.0",
+      "pinned": false,
+      "pinned_version": null
+    },
+    {
+      "name": "qt",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qt3d",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qt5compat",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtbase",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2_1",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtcanvaspainter",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtcharts",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtconnectivity",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtdatavis3d",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtdeclarative",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtgraphs",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtgrpc",
+      "installed_versions": [
+        "6.11.1_3"
+      ],
+      "current_version": "6.11.2_2",
+      "pinned": true,
+      "pinned_version": "6.11.1_3"
+    },
+    {
+      "name": "qthttpserver",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtimageformats",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtlanguageserver",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtlocation",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtlottie",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtmultimedia",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtnetworkauth",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtpositioning",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtquick3d",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtquick3dphysics",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtquickeffectmaker",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtquicktimeline",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtremoteobjects",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtscxml",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtsensors",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtserialbus",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtserialport",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtshadertools",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtspeech",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtsvg",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qttasktree",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qttools",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2_1",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qttranslations",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtvirtualkeyboard",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtwebchannel",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtwebengine",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtwebsockets",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "qtwebview",
+      "installed_versions": [
+        "6.11.1"
+      ],
+      "current_version": "6.11.2",
+      "pinned": true,
+      "pinned_version": "6.11.1"
+    },
+    {
+      "name": "simdjson",
+      "installed_versions": [
+        "5.0.3"
+      ],
+      "current_version": "5.0.4",
+      "pinned": false,
+      "pinned_version": null
+    }
+  ],
+  "casks": []
+}

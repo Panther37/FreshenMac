@@ -1,0 +1,14 @@
+{
+  "formulae": [],
+  "casks": [
+    {
+      "name": "fuse-t",
+      "installed_versions": [
+        "1.2.7"
+      ],
+      "current_version": "1.2.9",
+      "pinned": false,
+      "pinned_version": null
+    }
+  ]
+}

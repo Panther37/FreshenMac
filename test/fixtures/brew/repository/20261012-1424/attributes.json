@@ -1,0 +1,13 @@
+{
+  "cmd_args": [
+    "brew",
+    "--repository"
+  ],
+  "cmd_str": "brew --repository",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 0,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}

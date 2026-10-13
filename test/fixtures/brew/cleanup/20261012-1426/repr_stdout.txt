@@ -1,0 +1,1 @@
+'Removing: /Users/matt/Library/Caches/Homebrew/.DS_Store... (6.1KB)\n==> This operation has freed approximately 6.1KB of disk space.\n'

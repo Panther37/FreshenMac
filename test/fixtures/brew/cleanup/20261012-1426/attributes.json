@@ -1,0 +1,14 @@
+{
+  "cmd_args": [
+    "brew",
+    "cleanup",
+    "--prune=all"
+  ],
+  "cmd_str": "brew cleanup --prune=all",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 9,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}
