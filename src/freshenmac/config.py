@@ -11,7 +11,7 @@ APP_INFO: dict[str, str] = {
     'Description': 'Updates macOS operating system, App store, and homebrew',
     'Email':       'matt@panther37.com',
     'Name':        'FreshenMac',
-    'Version':     '1.1.0',
+    'Version':     '1.1.1',
 }
 
 # Debug & Execution Limits
@@ -19,15 +19,15 @@ DEFAULTS: dict[str, Any] = {
     'Debug Limit': 10000,
     'no-mas':      ['408981381', 'iPhoto'],  # Skip these App Store Updates
     'plist':       f"com.panther37.{APP_INFO['Name']}",
-    'schedule': {
-            'Hour':    2,
-            'Minute':  0,
-            'Weekday': 0,
-        },
+    'schedule':    {
+        'Hour':    2,
+        'Minute':  0,
+        'Weekday': 0,
+    },
 }
 
 # Module build number
-FILE_BUILD = 20261010
+FILE_BUILD = 20261014
 
 # Idle Thresholds (seconds)
 IDLE_THRESHOLD: dict[str, int] = {

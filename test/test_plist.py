@@ -164,11 +164,22 @@ class TestLaunchAgent(unittest.TestCase):
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 30, 'Hour': 7, 'Weekday': 2})
 
+    def test_build_plist_data_with_dict_preferences(self):
+        """Verifies build_plist_data incorporates pre-parsed dict schedule from preferences."""
+        agent = LaunchAgent()
+        with patch(
+            'freshenmac.plist.load_preferences',
+            return_value={'schedule': {'Minute': 0, 'Hour': 6, 'Weekday': 1}},
+        ):
+            data = agent.build_plist_data()
+            parsed = plistlib.loads(data)
+            self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 0, 'Hour': 6, 'Weekday': 1})
+
     @patch('freshenmac.plist.RunCMD')
     def test_check_and_install_already_active(self, mock_cmd):
         """Verifies check_and_install skips installation if files, plist, and launchd are current."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(LaunchAgent, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
+        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
             patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False), \
             patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True), \
             patch.object(agent, 'install') as mock_install, \
@@ -181,7 +192,7 @@ class TestLaunchAgent(unittest.TestCase):
     def test_check_and_install_needs_install(self, mock_cmd):
         """Verifies check_and_install triggers install and activate when plist requires update."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(LaunchAgent, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
+        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
             patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True), \
             patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=False), \
             patch.object(agent, 'install', return_value=True) as mock_install, \
@@ -216,7 +227,7 @@ class TestLaunchAgent(unittest.TestCase):
         """Verifies files_to_update returns empty list when target directory is source package."""
         agent = LaunchAgent()
         agent.target_dir = PATHS['Dir']['Package']
-        self.assertEqual(agent.files_to_update, [])
+        self.assertEqual(agent.package_sync.files_to_update, [])
 
     def test_init_defaults(self):
         """Verifies LaunchAgent default property values and directory destinations."""
@@ -234,7 +245,7 @@ class TestLaunchAgent(unittest.TestCase):
     def test_install_dry_run(self):
         """Verifies install returns True without writing files in dry-run mode."""
         agent = LaunchAgent(dry_run=True)
-        with patch.object(LaunchAgent, 'files_to_update', new_callable=PropertyMock, return_value=[Path('foo.py')]), \
+        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[Path('foo.py')]), \
             patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
             self.assertTrue(agent.install())
 
@@ -250,7 +261,7 @@ class TestLaunchAgent(unittest.TestCase):
             dummy_src = Path(tmp_dir) / 'source_freshenmac.py'
             dummy_src.write_text("FILE_BUILD = 1\n")
 
-            with patch.object(LaunchAgent, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src]), \
+            with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src]), \
                 patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
                 self.assertTrue(agent.install())
                 self.assertTrue((agent.target_dir / dummy_src.name).is_file())
@@ -271,7 +282,7 @@ class TestLaunchAgent(unittest.TestCase):
             agent.log_dir = Path(tmp_dir) / 'Logs'
 
             with patch.object(Path, 'mkdir', side_effect=PermissionError("read-only")), \
-                patch.object(LaunchAgent, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
+                patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
                 patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
                 self.assertTrue(agent.install())
                 self.assertTrue(mock_util_cmd.called)
@@ -391,6 +402,14 @@ class TestLaunchAgent(unittest.TestCase):
         self.assertEqual(res, {'Minute': 0, 'Hour': 6, 'Weekday': 1})
         res2 = parse_cron("30 18 * * *")
         self.assertEqual(res2, {'Minute': 30, 'Hour': 18})
+
+    def test_parse_cron_dict_and_list(self):
+        """Verifies parse_cron returns already-parsed dict or list of dicts directly."""
+        d = {'Minute': 0, 'Hour': 6, 'Weekday': 1}
+        self.assertEqual(parse_cron(d), d)
+
+        lst = [{'Minute': 0, 'Hour': 6}, {'Minute': 30, 'Hour': 18}]
+        self.assertEqual(parse_cron(lst), lst)
 
     def test_plist_needs_install(self):
         """Verifies plist_needs_install checks file existence, content matching, ownership, and mode."""
@@ -789,7 +808,6 @@ class TestStartupRun(unittest.TestCase):
         agent = StartupRun(dry_run=False)
         with patch.object(Path, 'mkdir', side_effect=PermissionError("denied")):
             self.assertFalse(agent.schedule())
-
 
 
 if __name__ == '__main__':
