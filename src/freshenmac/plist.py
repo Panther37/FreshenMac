@@ -12,7 +12,7 @@ from typing import Any
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261010
+FILE_BUILD = 20261014
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
@@ -115,7 +115,7 @@ class LaunchAgent(PrivilegedCMD):
             tmp_sudoers.unlink(missing_ok=True)
 
         if installed:
-            self.log.print_store(f"Installed {self.target_plist.name} in {self.launch_agents_dir}", 'LaunchAgent')
+            self.log.print_store(f"Installed {self.launch_agents_dir}/{self.target_plist.name}", 'LaunchAgent')
             if sudoers_cmds:
                 self.log.print_store(f"Installed {self.sudoers} for unattended maintenance.", 'LaunchAgent')
         else:
@@ -236,14 +236,16 @@ class LaunchAgent(PrivilegedCMD):
     def check_and_install(self) -> bool:
         """Verifies package files and LaunchAgent installation, activating if needed."""
         if self.old_user_plist.is_file() and not self.dry_run:
-            RunCMD(['launchctl', 'unload', '-w', str(self.old_user_plist)], **self.debug_vars)
+            if RunCMD(['launchctl', 'unload', '-w', str(self.old_user_plist)], **self.debug_vars):
+                self.log.print_store(f"Unloaded legacy user LaunchAgent: {self.old_user_plist.name}", 'LaunchAgent')
+            else:
+                self.log.print_store(f"{self.old_user_plist.name} was not active in launchd", 'LaunchAgent')
             try:
                 self.old_user_plist.unlink()
-            except OSError:
-                pass
-
-        if self.files_to_update:
-            if not self.package_sync.sync(self.files_to_update):
+            except OSError as err_os:
+                self.log.print_store(f"Failed to remove {self.old_user_plist.name}: {err_os}", 'LaunchAgent')
+        if self.package_sync.files_to_update:
+            if not self.package_sync.sync(self.package_sync.files_to_update):
                 return False
 
         if self.plist_needs_install:
@@ -261,11 +263,6 @@ class LaunchAgent(PrivilegedCMD):
         uid = getuid()
         return f"gui/{uid}" if RunCMD(['launchctl', 'print', f"gui/{uid}"], **self.debug_vars) else f"user/{uid}"
 
-    @property
-    def files_to_update(self) -> list[Path]:
-        """Returns list of package files in config.PATHS['Dir']['Package'] that are missing/outdated in target_dir."""
-        return self.package_sync.files_to_update
-
     def install(
         self,
         *,
@@ -273,8 +270,8 @@ class LaunchAgent(PrivilegedCMD):
         sync_package: bool = True,
     ) -> bool:
         """Installs the LaunchAgent plist file and synchronizes package files."""
-        if sync_package and self.files_to_update:
-            if not self.package_sync.sync(self.files_to_update):
+        if sync_package and self.package_sync.files_to_update:
+            if not self.package_sync.sync(self.package_sync.files_to_update):
                 return False
 
         plist_data = self.build_plist_data()
@@ -370,6 +367,7 @@ class LaunchAgent(PrivilegedCMD):
             '/opt/homebrew/bin/mas',
             '/sbin/shutdown',
             '/usr/bin/fdesetup',
+            '/usr/bin/true',
             '/usr/bin/xcodebuild',
             '/usr/local/bin/brew',
             '/usr/local/bin/mas',
@@ -736,6 +734,7 @@ class SavePreferences(PrivilegedCMD):
         if not self.updates:
             self.print_help()
             return not self._parse_error
+
         if self.debug_vars['debug'] > 1:
             self.log.print(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
 
@@ -854,6 +853,19 @@ class StartupRun:
         self.agent.target_plist = val
 
 
+def check_data_format(some_data: Any, contains_expected: list, allowed_types: list[type] | type) -> bool:
+    if isinstance(allowed_types, type):
+        allowed_types = [allowed_types]
+    if isinstance(some_data, tuple(allowed_types)):
+        # Fuzzy check for correct input
+        check_val = str(some_data)
+        for i in contains_expected:
+            if i in check_val:
+                return True
+
+    return False
+
+
 def check_plist(
     a_plist: str = config.DEFAULTS['plist'],
     cron_dict: dict | list[dict] = config.DEFAULTS['schedule'],
@@ -906,8 +918,11 @@ def load_preferences() -> dict[str, Any]:
     return prefs
 
 
-def parse_cron(expr: str) -> dict[str, int] | list[dict[str, int]]:
+def parse_cron(expr: str | dict[str, int] | list[dict[str, int]]) -> dict[str, int] | list[dict[str, int]]:
     """Converts a 5-part cron expression into a launchd interval dict (or list of dicts)."""
+    keys = ['Minute', 'Hour', 'Day', 'Month', 'Weekday']
+    if check_data_format(expr, keys, [dict, list]):
+        return expr
 
     def star_int(a_val: str) -> int | list[int] | None:
         if ',' in a_val:
@@ -915,7 +930,6 @@ def parse_cron(expr: str) -> dict[str, int] | list[dict[str, int]]:
 
         return int(a_val) if a_val.isdigit() else None
 
-    keys = ['Minute', 'Hour', 'Day', 'Month', 'Weekday']
     values = expr.split()
     if len(values) != 5:
         raise ValueError(
