@@ -107,11 +107,11 @@ class TestXcode(unittest.TestCase):
     def test_init_defaults(self):
         """Verifies default values and custom parameter assignment upon initialization."""
         xc = Xcode()
-        self.assertFalse(xc.debug)
+        self.assertEqual(xc.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(xc.dry_run)
 
-        xc_custom = Xcode(debug=True, dry_run=True)
-        self.assertTrue(xc_custom.debug)
+        xc_custom = Xcode(debug_vars={'debug': 1, 'debug_limit': 0}, dry_run=True)
+        self.assertEqual(xc_custom.debug_vars, {'debug': 1, 'debug_limit': 0})
         self.assertTrue(xc_custom.dry_run)
 
     def test_install_clt_headless_install_failure(self):

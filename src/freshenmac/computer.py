@@ -15,7 +15,7 @@ from freshenmac.mas import AppStore
 from freshenmac.softwareupdate import SoftwareUpdate
 from freshenmac.util import Logger, RunCMD
 
-FILE_BUILD = 20261013
+FILE_BUILD = 20261015
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Boot Time': re.compile(r"sec = (?P<epoch>\d+)"),
@@ -25,7 +25,7 @@ PATTERN: dict[str, re.Pattern[str]] = {
 
 class MacOS:
     """
-    Host computer orchestrator. Manages system facts and coordinates
+    Host computer orchestrator.  Manages system facts and coordinates
     HomeBrew, AppStore, SoftwareUpdate, Xcode, and Reboot workflows.
     """
 
@@ -35,8 +35,7 @@ class MacOS:
         self,
         *,
         console_user: str | None = None,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         force_reboot: bool = False,
         ignore_mas: list[str] | set[str] | None = None,
@@ -48,7 +47,7 @@ class MacOS:
     ) -> None:
         self._updates_performed = False
         self.console_user = console_user or getpass.getuser()
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.mas_timeout = mas_timeout
@@ -63,8 +62,7 @@ class MacOS:
         # Initialize workers
         self.app_store = AppStore(
             brew_path=self.brew.brew_path,
-            debug=debug,
-            debug_limit=debug_limit,
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             ignore_mas=ignore_mas,
             logger=self.log,
@@ -74,8 +72,7 @@ class MacOS:
         self.softwareupdate = SoftwareUpdate(
             arm_installed=self.arm_installed,
             console_user=self.console_user,
-            debug=debug,
-            debug_limit=debug_limit,
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             logger=self.log,
             notify_manual_fn=lambda lbl: self.notify_manual_os_update(lbl),
@@ -155,12 +152,12 @@ class MacOS:
         """HomeBrew management instance configured for this machine's architecture."""
         return HomeBrew(
             is_arm=self.arm_installed,
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             logger=self.log,
             reboot=self.reboot,
             timeout=self.timeout,
             upgrade_timeout=self.upgrade_timeout,
-            **self.debug_vars,
         )
 
     def check_and_reboot(self) -> None:
@@ -168,7 +165,7 @@ class MacOS:
         self.check_reboot_status()
         if self.reboot.required or self.SUG_REBOOT_STR in self.reboot.suggested:
             self.log.print_store(f"Reboot {'required' if self.reboot.required else 'suggested'}", 'Reboot')
-            rebooter = Reboot(self, dry_run=self.dry_run, logger=self.log, **self.debug_vars)
+            rebooter = Reboot(self, debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log)
             rebooter.start_reboot(self.reboot)
         else:
             self.log.print_store("No reboot required or suggested.", 'Reboot')
@@ -190,19 +187,7 @@ class MacOS:
     @staticmethod
     def cleanup_startup_run() -> bool:
         """Unloads and removes the temporary one-shot startup LaunchAgent if present."""
-        return plist.cleanup_startup_run()
-
-    def cmd_options(self, update_options: dict | None = None) -> dict[str, Any]:
-        """Common options dictionary for long-running system/app updates under utility QoS."""
-        options = {
-            'cancelable': True,
-            'taskpolicy': 'utility',
-            'timeout':    self.timeout,
-            **self.debug_vars,
-        }
-        if update_options:
-            options.update(update_options)
-        return options
+        return plist.StartupRun.cleanup()
 
     @cached_property
     def filevault_enabled(self) -> bool:

@@ -6,18 +6,15 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 from freshenmac.config import DEFAULTS, PATHS
 from freshenmac.plist import (
+    CronSchedule,
     LaunchAgent,
     PackageSync,
     SavePreferences,
     StartupRun,
     check_plist,
-    cleanup_startup_run,
     file_needs_update,
     get_file_build,
     load_preferences,
-    parse_cron,
-    uninstall_plist,
-    update_installed_script,
 )
 from freshenmac.util import Logger, RunCMD
 
@@ -30,6 +27,161 @@ def make_cmd(stdout: str = "", stderr: str = "", errno: int = 0) -> RunCMD:
     cmd.returncode = errno
     cmd.debug = False
     return cmd
+
+
+class TestCronSchedule(unittest.TestCase):
+    """Unit tests for the CronSchedule dataclass."""
+
+    def test_bool_and_len(self):
+        """Verifies boolean evaluation and length computation of CronSchedule."""
+        empty = CronSchedule()
+        self.assertFalse(empty)
+        self.assertEqual(len(empty), 0)
+
+        sched = CronSchedule.from_dicts({'Minute': 0, 'Hour': 6})
+        self.assertTrue(sched)
+        self.assertEqual(len(sched), 1)
+
+    def test_fields_format(self):
+        """Verifies fields dictionary structure matches dict[str, list[int]]."""
+        sched = CronSchedule.from_cron("0 6 1,15 * *")
+        self.assertEqual(
+            sched.fields,
+            {
+                'Minute':  [0],
+                'Hour':    [6],
+                'Day':     [1, 15],
+                'Month':   [],
+                'Weekday': [],
+            },
+        )
+
+    def test_from_cron(self):
+        """Verifies from_cron creates a CronSchedule instance."""
+        sched = CronSchedule.from_cron("0 6 * * 1")
+        self.assertIsInstance(sched, CronSchedule)
+        self.assertEqual(sched.fields['Minute'], [0])
+        self.assertEqual(sched.fields['Hour'], [6])
+        self.assertEqual(sched.fields['Weekday'], [1])
+        self.assertEqual(sched.intervals, [{'Minute': 0, 'Hour': 6, 'Weekday': 1}])
+        self.assertEqual(sched.to_launchd(), {'Minute': 0, 'Hour': 6, 'Weekday': 1})
+
+    def test_from_dicts(self):
+        """Verifies from_dicts normalizes dict and list inputs."""
+        d = {'Minute': 30, 'Hour': 7}
+        sched1 = CronSchedule.from_dicts(d)
+        self.assertEqual(sched1.intervals, [d])
+
+        lst = [{'Minute': 0, 'Hour': 6, 'Day': 1}, {'Minute': 0, 'Hour': 6, 'Day': 15}]
+        sched2 = CronSchedule.from_dicts(lst)
+        self.assertEqual(sched2.fields['Day'], [1, 15])
+        self.assertEqual(sched2.intervals, lst)
+        self.assertEqual(sched2.to_launchd(), lst)
+
+    def test_iter(self):
+        """Verifies iteration over CronSchedule intervals."""
+        lst = [{'Minute': 0, 'Hour': 6, 'Day': 1}, {'Minute': 0, 'Hour': 6, 'Day': 15}]
+        sched = CronSchedule.from_dicts(lst)
+        self.assertEqual(list(sched), lst)
+
+    def test_parse_dict_and_list(self):
+        """Verifies parse handles dict, list of dicts, and existing CronSchedule."""
+        d = {'Minute': 0, 'Hour': 6, 'Weekday': 1}
+        sched1 = CronSchedule.parse(d)
+        self.assertIsInstance(sched1, CronSchedule)
+        self.assertEqual(sched1.to_launchd(), d)
+
+        lst = [{'Minute': 0, 'Hour': 6, 'Day': 1}, {'Minute': 0, 'Hour': 6, 'Day': 15}]
+        sched2 = CronSchedule.parse(lst)
+        self.assertIsInstance(sched2, CronSchedule)
+        self.assertEqual(sched2.to_launchd(), lst)
+
+        self.assertIs(CronSchedule.parse(sched1), sched1)
+
+    def test_parse_invalid(self):
+        """Verifies parse raises ValueError on invalid cron tokens or unsupported types."""
+        with self.assertRaises(ValueError) as ctx:
+            CronSchedule.parse("0 6 *")
+        self.assertIn("Got 3 of 5 expected fields (minute hour day month weekday)", str(ctx.exception))
+        self.assertIn("Example: '0 18 * * 1' (Mondays at 6:00 PM)", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx2:
+            CronSchedule.parse("1 2 3 4 5 6")
+        self.assertIn("Got 6 of 5 expected fields (minute hour day month weekday)", str(ctx2.exception))
+
+        with self.assertRaises(ValueError):
+            CronSchedule.parse(12345)
+
+    def test_parse_ranges(self):
+        """Verifies parse range syntax handling."""
+        self.assertNotEqual(
+            CronSchedule.parse("0 6 * * 1-3").to_launchd(), [
+                {'Hour': 6, 'Minute': 0, 'Weekday': 1},
+                {'Hour': 6, 'Minute': 0, 'Weekday': 2},
+                {'Hour': 6, 'Minute': 0, 'Weekday': 3},
+            ],
+        )
+
+    def test_parse_steps(self):
+        """Verifies parse step syntax handling."""
+        self.assertNotEqual(
+            CronSchedule.parse("0 */8 * * *").to_launchd(), [
+                {'Hour': 0, 'Minute': 0},
+                {'Hour': 8, 'Minute': 0},
+                {'Hour': 16, 'Minute': 0},
+            ],
+        )
+
+    def test_parse_valid_commas(self):
+        """Verifies parse parses comma-separated day values into list of interval dictionaries."""
+        res = CronSchedule.parse("0 6 1,15 * *").to_launchd()
+        expected = [
+            {'Day': 1, 'Hour': 6, 'Minute': 0},
+            {'Day': 15, 'Hour': 6, 'Minute': 0},
+        ]
+        self.assertEqual(res, expected)
+
+    def test_parse_valid_single(self):
+        """Verifies parse parses standard 5-part cron expressions into StartCalendarInterval dictionary."""
+        self.assertEqual(CronSchedule.parse("0 6 * * 1").to_launchd(), {'Minute': 0, 'Hour': 6, 'Weekday': 1})
+        self.assertEqual(CronSchedule.parse("30 18 * * *").to_launchd(), {'Minute': 30, 'Hour': 18})
+
+    def test_resolve_explicit(self):
+        """Verifies resolve returns existing instance or parses explicit input."""
+        sched = CronSchedule.from_dicts({'Minute': 0, 'Hour': 6})
+        self.assertIs(CronSchedule.resolve(sched), sched)
+
+        resolved_str = CronSchedule.resolve("0 6 * * 1")
+        self.assertEqual(resolved_str.intervals, [{'Minute': 0, 'Hour': 6, 'Weekday': 1}])
+
+    def test_resolve_invalid_preferences_logs_warning_and_falls_back(self):
+        """Verifies resolve logs a warning and falls back to DEFAULTS when preferences contain invalid schedule."""
+        mock_logger = MagicMock()
+        with patch('freshenmac.plist.load_preferences', return_value={'schedule': 'invalid_cron'}):
+            resolved = CronSchedule.resolve(None, logger=mock_logger)
+            self.assertEqual(resolved.to_launchd(), DEFAULTS['schedule'])
+            mock_logger.print_store.assert_called_once()
+            call_msg = mock_logger.print_store.call_args[0][0]
+            self.assertIn("[Warning] Invalid schedule in preferences: 'invalid_cron'", call_msg)
+            self.assertIn(f"Falling back to default: {DEFAULTS['schedule']}", call_msg)
+            self.assertEqual(mock_logger.print_store.call_args[1].get('component'), 'Preferences')
+
+    def test_resolve_preferences_and_default(self):
+        """Verifies resolve falls back to preferences and DEFAULTS."""
+        with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
+            resolved_pref = CronSchedule.resolve(None)
+            self.assertEqual(resolved_pref.to_launchd(), {'Minute': 30, 'Hour': 7, 'Weekday': 2})
+
+        with patch('freshenmac.plist.load_preferences', return_value={}):
+            resolved_def = CronSchedule.resolve(None)
+            self.assertEqual(resolved_def.to_launchd(), DEFAULTS['schedule'])
+
+    def test_to_cron(self):
+        """Verifies to_cron reconstructs standard 5-part cron expressions."""
+        self.assertEqual(CronSchedule.from_cron("0 6 1,15 * *").to_cron(), "0 6 1,15 * *")
+        self.assertEqual(CronSchedule.from_cron("0 6 * * 1").to_cron(), "0 6 * * 1")
+        self.assertEqual(CronSchedule.from_cron("30 18 * * *").to_cron(), "30 18 * * *")
+        self.assertEqual(CronSchedule().to_cron(), "* * * * *")
 
 
 class TestFileUpdateHelpers(unittest.TestCase):
@@ -145,7 +297,7 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_build_plist_data(self):
         """Verifies build_plist_data generates valid XML plist bytes matching schedule parameters."""
-        agent = LaunchAgent(hour=8, minute=30, weekday=1)
+        agent = LaunchAgent(schedule={'Hour': 8, 'Minute': 30, 'Weekday': 1})
         with patch('freshenmac.plist.load_preferences', return_value={}):
             data = agent.build_plist_data()
             self.assertIsInstance(data, bytes)
@@ -158,19 +310,19 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_build_plist_data_with_preferences(self):
         """Verifies build_plist_data incorporates cron schedule from stored preferences."""
-        agent = LaunchAgent()
         with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
+            agent = LaunchAgent()
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 30, 'Hour': 7, 'Weekday': 2})
 
     def test_build_plist_data_with_dict_preferences(self):
         """Verifies build_plist_data incorporates pre-parsed dict schedule from preferences."""
-        agent = LaunchAgent()
         with patch(
             'freshenmac.plist.load_preferences',
             return_value={'schedule': {'Minute': 0, 'Hour': 6, 'Weekday': 1}},
         ):
+            agent = LaunchAgent()
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 0, 'Hour': 6, 'Weekday': 1})
@@ -226,21 +378,19 @@ class TestLaunchAgent(unittest.TestCase):
     def test_files_to_update_same_dir(self):
         """Verifies files_to_update returns empty list when target directory is source package."""
         agent = LaunchAgent()
-        agent.target_dir = PATHS['Dir']['Package']
+        agent.package_sync.target_dir = PATHS['Dir']['Package']
         self.assertEqual(agent.package_sync.files_to_update, [])
 
     def test_init_defaults(self):
         """Verifies LaunchAgent default property values and directory destinations."""
         agent = LaunchAgent()
         self.assertEqual(agent.label, DEFAULTS['plist'])
-        self.assertEqual(agent.hour, DEFAULTS['schedule']['Hour'])
-        self.assertEqual(agent.minute, DEFAULTS['schedule']['Minute'])
-        self.assertEqual(agent.weekday, DEFAULTS['schedule']['Weekday'])
-        self.assertFalse(agent.debug)
+        self.assertEqual(agent.schedule.to_launchd(), DEFAULTS['schedule'])
+        self.assertEqual(agent.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(agent.dry_run)
         self.assertEqual(agent.launch_agents_dir, Path('/Library/LaunchAgents'))
-        self.assertEqual(agent.target_dir, PATHS['Dir']['Target'])
-        self.assertEqual(agent.target_script, PATHS['Script']['Target'])
+        self.assertEqual(agent.package_sync.target_dir, PATHS['Dir']['Target'])
+        self.assertEqual(agent.package_sync.target_script, PATHS['Script']['Target'])
 
     def test_install_dry_run(self):
         """Verifies install returns True without writing files in dry-run mode."""
@@ -253,10 +403,10 @@ class TestLaunchAgent(unittest.TestCase):
         """Verifies install writes package files and target plist in normal mode."""
         agent = LaunchAgent(dry_run=False)
         with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.target_dir = Path(tmp_dir) / 'pkg'
+            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
             agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.target_script = agent.target_dir / 'main.py'
+            agent.package_sync.target_script = agent.package_sync.target_dir / 'main.py'
 
             dummy_src = Path(tmp_dir) / 'source_freshenmac.py'
             dummy_src.write_text("FILE_BUILD = 1\n")
@@ -264,7 +414,7 @@ class TestLaunchAgent(unittest.TestCase):
             with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src]), \
                 patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
                 self.assertTrue(agent.install())
-                self.assertTrue((agent.target_dir / dummy_src.name).is_file())
+                self.assertTrue((agent.package_sync.target_dir / dummy_src.name).is_file())
                 self.assertTrue(agent.target_plist.is_file())
 
     @patch('sys.stdin.isatty', return_value=True)
@@ -356,61 +506,6 @@ class TestLaunchAgent(unittest.TestCase):
         expected = Path.home() / 'Library/LaunchAgents' / f"{DEFAULTS['plist']}.plist"
         self.assertEqual(agent.old_user_plist, expected)
 
-    def test_parse_cron_invalid(self):
-        """Verifies parse_cron raises ValueError with helpful guidance when token count is invalid."""
-        with self.assertRaises(ValueError) as ctx:
-            parse_cron("0 6 *")
-        self.assertIn("Got 3 of 5 expected fields (minute hour day month weekday)", str(ctx.exception))
-        self.assertIn("Example: '0 18 * * 1' (Mondays at 6:00 PM)", str(ctx.exception))
-
-        with self.assertRaises(ValueError) as ctx2:
-            parse_cron("1 2 3 4 5 6")
-        self.assertIn("Got 6 of 5 expected fields (minute hour day month weekday)", str(ctx2.exception))
-
-    def test_parse_cron_ranges(self):
-        """Verifies parse_cron range syntax handling."""
-        self.assertNotEqual(
-            parse_cron("0 6 * * 1-3"), [
-                {'Hour': 6, 'Minute': 0, 'Weekday': 1},
-                {'Hour': 6, 'Minute': 0, 'Weekday': 2},
-                {'Hour': 6, 'Minute': 0, 'Weekday': 3},
-            ],
-        )
-
-    def test_parse_cron_steps(self):
-        """Verifies parse_cron step syntax handling."""
-        self.assertNotEqual(
-            parse_cron("0 */8 * * *"), [
-                {'Hour': 0, 'Minute': 0},
-                {'Hour': 8, 'Minute': 0},
-                {'Hour': 16, 'Minute': 0},
-            ],
-        )
-
-    def test_parse_cron_valid_commas(self):
-        """Verifies parse_cron parses comma-separated day values into list of interval dictionaries."""
-        res = parse_cron("0 6 1,15 * *")
-        expected = [
-            {'Day': 1, 'Hour': 6, 'Minute': 0},
-            {'Day': 15, 'Hour': 6, 'Minute': 0},
-        ]
-        self.assertEqual(res, expected)
-
-    def test_parse_cron_valid_single(self):
-        """Verifies parse_cron parses standard 5-part cron expressions into StartCalendarInterval dictionary."""
-        res = parse_cron("0 6 * * 1")
-        self.assertEqual(res, {'Minute': 0, 'Hour': 6, 'Weekday': 1})
-        res2 = parse_cron("30 18 * * *")
-        self.assertEqual(res2, {'Minute': 30, 'Hour': 18})
-
-    def test_parse_cron_dict_and_list(self):
-        """Verifies parse_cron returns already-parsed dict or list of dicts directly."""
-        d = {'Minute': 0, 'Hour': 6, 'Weekday': 1}
-        self.assertEqual(parse_cron(d), d)
-
-        lst = [{'Minute': 0, 'Hour': 6}, {'Minute': 30, 'Hour': 18}]
-        self.assertEqual(parse_cron(lst), lst)
-
     def test_plist_needs_install(self):
         """Verifies plist_needs_install checks file existence, content matching, ownership, and mode."""
         agent = LaunchAgent()
@@ -461,31 +556,6 @@ class TestLaunchAgent(unittest.TestCase):
                 self.assertTrue(agent._remove_sudoers())
                 self.assertTrue(any(all(['rm' in c, 'sudoers' in ' '.join(c)]) for c in executed_cmds))
 
-    def test_sync_package_already_up_to_date(self):
-        """Verifies sync_package returns True immediately when no files need updating."""
-        agent = LaunchAgent(dry_run=False)
-        self.assertTrue(agent.sync_package(files=[]))
-
-    def test_sync_package_dry_run(self):
-        """Verifies sync_package returns True without file operations in dry-run mode."""
-        agent = LaunchAgent(dry_run=True)
-        self.assertTrue(agent.sync_package(files=[Path('dummy.py')]))
-
-    def test_sync_package_success(self):
-        """Verifies sync_package copies files from source to destination directory."""
-        agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.target_dir = Path(tmp_dir) / 'pkg'
-            agent.target_script = agent.target_dir / 'main.py'
-
-            src = Path(tmp_dir) / 'dummy.py'
-            src.write_text("FILE_BUILD = 1\n")
-
-            self.assertTrue(agent.sync_package(files=[src]))
-            dest = agent.target_dir / 'dummy.py'
-            self.assertTrue(dest.is_file())
-            self.assertEqual(dest.read_text(), "FILE_BUILD = 1\n")
-
     def test_target_plist(self):
         """Verifies target_plist resolves to system LaunchAgents destination path."""
         agent = LaunchAgent()
@@ -493,32 +563,24 @@ class TestLaunchAgent(unittest.TestCase):
         self.assertEqual(agent.target_plist, expected)
 
     def test_top_level_wrappers(self):
-        """Verifies top-level check_plist, uninstall_plist, and update_installed_script wrappers."""
-        with patch.object(LaunchAgent, 'check_and_install', return_value=True) as mock_check, \
-            patch.object(LaunchAgent, 'uninstall', return_value=True) as mock_uninst, \
-            patch.object(LaunchAgent, 'update_files', return_value=True) as mock_update:
+        """Verifies top-level check_plist wrapper."""
+        with patch.object(LaunchAgent, 'check_and_install', return_value=True) as mock_check:
             self.assertTrue(check_plist())
             mock_check.assert_called_once()
-
-            self.assertTrue(uninstall_plist())
-            mock_uninst.assert_called_once()
-
-            self.assertTrue(update_installed_script())
-            mock_update.assert_called_once()
 
     def test_uninstall(self):
         """Verifies uninstall unloads LaunchAgent, removes sudoers, and cleans up files."""
         agent = LaunchAgent(dry_run=False)
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.target_dir = Path(tmp_dir) / 'pkg'
+            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
             agent.launch_agents_dir.mkdir(parents=True)
-            agent.target_dir.mkdir(parents=True)
+            agent.package_sync.target_dir.mkdir(parents=True)
 
             plist_path = agent.target_plist
             plist_path.write_text("<plist></plist>")
 
-            script_path = agent.target_dir / 'main.py'
+            script_path = agent.package_sync.target_dir / 'main.py'
             script_path.write_text("FILE_BUILD = 1\n")
 
             with patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True), \
@@ -529,30 +591,7 @@ class TestLaunchAgent(unittest.TestCase):
                 mock_bootout.assert_called_once()
                 mock_remove_sudoers.assert_called_once()
                 self.assertFalse(plist_path.exists())
-                self.assertFalse(agent.target_dir.exists())
-
-    def test_update_files_dry_run(self):
-        """Verifies update_files returns True in dry-run mode without modifying target file."""
-        agent = LaunchAgent(dry_run=True)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / 'installed.py'
-            self.assertTrue(agent.update_files(target=target))
-
-    def test_update_files_same_file(self):
-        """Verifies update_files detects identical source and target files and skips copying."""
-        agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            same = Path(tmp_dir) / 'same.py'
-            same.write_text("FILE_BUILD = 1\n")
-            with patch.dict(
-                'freshenmac.config.PATHS', {
-                    'Script': {
-                        'Source': same,
-                        'Target': agent.target_script,
-                    },
-                },
-            ):
-                self.assertTrue(agent.update_files(target=same))
+                self.assertFalse(agent.package_sync.target_dir.exists())
 
 
 class TestPackageSync(unittest.TestCase):
@@ -602,6 +641,7 @@ class TestPackageSync(unittest.TestCase):
             sync.target_script = sync.target_dir / 'main.py'
             src = Path(tmp_dir) / 'dummy.py'
             src.write_text("FILE_BUILD = 1\n")
+            self.assertTrue(sync.sync(files=[]))
             self.assertTrue(sync.sync(files=[src]))
             dest = sync.target_dir / 'dummy.py'
             self.assertTrue(dest.is_file())
@@ -711,12 +751,6 @@ class TestStartupRun(unittest.TestCase):
     and post-reboot cleanup.
     """
 
-    def test_cleanup_startup_run_helper(self):
-        """Verifies cleanup_startup_run delegates to StartupRun.cleanup."""
-        with patch.object(StartupRun, 'cleanup', return_value=True) as mock_cleanup:
-            self.assertTrue(cleanup_startup_run())
-            mock_cleanup.assert_called_once()
-
     def test_default_logger(self):
         """Verifies default logger initialization on StartupRun."""
         startup = StartupRun(dry_run=True)
@@ -736,7 +770,6 @@ class TestStartupRun(unittest.TestCase):
         self.assertEqual(agent.launch_agents_dir, custom_agents)
         self.assertEqual(agent.log_dir, custom_logs)
         self.assertEqual(agent.target_plist, custom_plist)
-        self.assertEqual(agent.plist_path, custom_plist)
 
     def test_logger_integration(self):
         """Verifies custom logger propagation to underlying LaunchAgent in StartupRun."""
@@ -762,18 +795,12 @@ class TestStartupRun(unittest.TestCase):
         self.assertEqual(agent.log_dir, new_logs)
         self.assertEqual(agent.agent.log_dir, new_logs)
         self.assertEqual(agent.target_plist, new_plist)
-        self.assertEqual(agent.plist_path, new_plist)
         self.assertEqual(agent.agent.target_plist, new_plist)
-
-        alt_plist = Path('/tmp/alt.plist')
-        agent.plist_path = alt_plist
-        self.assertEqual(agent.target_plist, alt_plist)
-        self.assertEqual(agent.agent.target_plist, alt_plist)
 
     def test_remove_missing_file_returns_true(self):
         """Verifies remove returns True when target plist does not exist."""
         agent = StartupRun()
-        agent.plist_path = Path('/nonexistent/path/runonce.plist')
+        agent.target_plist = Path('/nonexistent/path/runonce.plist')
         self.assertTrue(agent.remove())
 
     def test_schedule_and_remove(self):
@@ -782,21 +809,21 @@ class TestStartupRun(unittest.TestCase):
             agent = StartupRun(dry_run=False)
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
             agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.plist_path = agent.launch_agents_dir / f"{agent.label}.plist"
+            agent.target_plist = agent.launch_agents_dir / f"{agent.label}.plist"
 
             with patch('freshenmac.plist.RunCMD') as mock_cmd:
                 mock_cmd.return_value.returncode = 0
                 self.assertTrue(agent.schedule())
-                self.assertTrue(agent.plist_path.is_file())
+                self.assertTrue(agent.target_plist.is_file())
 
-                with open(agent.plist_path, 'rb') as f:
+                with open(agent.target_plist, 'rb') as f:
                     plist_data = plistlib.load(f)
                 self.assertEqual(plist_data['Label'], agent.label)
                 self.assertTrue(plist_data['RunAtLoad'])
 
                 # Test remove
                 self.assertTrue(agent.remove())
-                self.assertFalse(agent.plist_path.exists())
+                self.assertFalse(agent.target_plist.exists())
 
     def test_schedule_dry_run(self):
         """Verifies schedule returns True without creating files in dry run."""

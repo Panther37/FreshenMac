@@ -61,7 +61,7 @@ class TestMacOS(unittest.TestCase):
         self.assertIsInstance(brew_inst, HomeBrew)
         self.assertEqual(brew_inst.is_arm, self.mac.arm_installed)
         self.assertEqual(brew_inst.dry_run, self.mac.dry_run)
-        self.assertEqual(brew_inst.debug, self.mac.debug_vars['debug'])
+        self.assertEqual(brew_inst.debug_vars, self.mac.debug_vars)
 
     def test_check_reboot_status_suggested(self):
         """Verifies check_reboot_status flags suggested reboot when uptime exceeds threshold."""
@@ -112,21 +112,6 @@ class TestMacOS(unittest.TestCase):
                 # Act: orchestrator evaluates check_staged_reboot and updates reboot state
                 self.mac.check_reboot_status()
                 self.assertIn('Staged Apple Software Update (1)', self.mac.reboot.required)
-
-    def test_cmd_options(self):
-        """Verifies cmd_options compiles execution options dictionary with defaults."""
-        # Arrange
-        self.mac.timeout = 1500
-        self.mac.debug_vars['debug'] = True
-
-        # Act
-        opts = self.mac.cmd_options()
-
-        # Assert
-        self.assertEqual(
-            opts,
-            {'cancelable': True, 'debug': True, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1500},
-        )
 
     def test_has_mas_dry_run_returns_false_without_installing(self):
         """Verifies has_mas returns False in dry run without invoking installation commands."""

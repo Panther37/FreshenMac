@@ -1,22 +1,137 @@
 from __future__ import annotations
 
+import itertools
+import json
 import plistlib
 import re
 import sys
+from dataclasses import dataclass, field
 from functools import cached_property
 from os import getuid
 from pathlib import Path
 from shutil import copy2
-from typing import Any
+from typing import Any, ClassVar
 
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261014
+FILE_BUILD = 20261015
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
 }
+
+
+@dataclass
+class CronSchedule:
+    """
+    Encapsulates LaunchAgent calendar schedule intervals.
+    Internally stores fields as dict[str, list[int]] mapping each dimension to a list of matching integers.
+    """
+    KEYS: ClassVar[tuple[str, ...]] = ('Minute', 'Hour', 'Day', 'Month', 'Weekday')
+    fields: dict[str, list[int]] = field(default_factory=lambda: {k: [] for k in CronSchedule.KEYS})
+
+    def __bool__(self) -> bool:
+        return any(self.fields.values())
+
+    def __iter__(self):
+        return iter(self.intervals)
+
+    def __len__(self) -> int:
+        return len(self.intervals)
+
+    @classmethod
+    def from_cron(cls, expr: str) -> CronSchedule:
+        """Parses a 5-part cron string into a CronSchedule."""
+        values = expr.split()
+        if len(values) != 5:
+            raise ValueError(
+                f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields "
+                f"Got {len(values)} of 5 expected fields (minute hour day month weekday).\n"
+                "\tExample: '0 18 * * 1' (Mondays at 6:00 PM)",
+            )
+
+        def parse_part(val: str) -> list[int]:
+            if val == '*':
+                return []
+            if ',' in val:
+                return sorted({int(x) for x in val.split(',') if x.strip().isdigit()})
+            if val.isdigit():
+                return [int(val)]
+            return []
+
+        return cls(fields={k: parse_part(v) for k, v in zip(cls.KEYS, values)})
+
+    @classmethod
+    def from_dicts(cls, data: dict[str, Any] | list[dict[str, Any]]) -> CronSchedule:
+        """Normalizes a launchd dict or list of dicts into a CronSchedule."""
+        fields: dict[str, list[int]] = {k: [] for k in cls.KEYS}
+        for a_dict in ([data] if isinstance(data, dict) else data):
+            for k in a_dict.keys() & cls.KEYS:  # Intersection of input keys and all allowed keys
+                fields[k].append(a_dict[k])
+        for j in cls.KEYS:
+            fields[j] = sorted(set(fields[j]))
+        return cls(fields=fields)
+
+    @property
+    def intervals(self) -> list[dict[str, int]]:
+        """Generates Cartesian product of active schedule fields for launchd."""
+        active = [k for k in self.KEYS if self.fields[k]]
+        if not active:
+            return []
+        return [dict(zip(active, combo)) for combo in itertools.product(*(self.fields[k] for k in active))]
+
+    @classmethod
+    def parse(cls, data: str | dict[str, Any] | list[dict[str, Any]] | CronSchedule) -> CronSchedule:
+        """Parses a cron string, launchd dict, or list of dicts into a CronSchedule."""
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str) and data.strip():
+            return cls.from_cron(data)
+        if isinstance(data, (dict, list)):
+            return cls.from_dicts(data)
+        raise ValueError(f"Invalid schedule input:\t'{data}'")
+
+    @classmethod
+    def resolve(cls, a_schedule: Any | None = None, *, logger: Any | None = None) -> CronSchedule:
+        """
+        Resolves schedule with 3-tier precedence:
+        1. Explicit argument (CronSchedule, dict, list of dicts, or cron string)
+        2. Saved preferences (load_preferences()['schedule'])
+        3. Config defaults (config.DEFAULTS['schedule'])
+        """
+        if isinstance(a_schedule, (cls, dict, list)):
+            return cls.parse(a_schedule)
+        if isinstance(a_schedule, str) and a_schedule.strip():
+            return cls.parse(a_schedule)
+
+        if pref_sched := load_preferences().get('schedule', ''):
+            try:
+                return cls.parse(pref_sched)
+            except Exception as err:
+                log = logger or Logger()
+                log.print_store(
+                    f"[Warning] Invalid schedule in preferences: '{pref_sched}' ({err}).  "
+                    f"Falling back to default: {config.DEFAULTS['schedule']}",
+                    component='Preferences',
+                )
+
+        return cls.from_dicts(config.DEFAULTS['schedule'])
+
+    def to_cron(self) -> str:
+        """Reconstructs a 5-part cron string from the schedule fields."""
+        parts = []
+        for key in self.KEYS:
+            if values := self.fields[key]:
+                parts.append(','.join(str(x) for x in values))
+            else:
+                parts.append('*')
+        return ' '.join(parts)
+
+    def to_launchd(self) -> dict[str, int] | list[dict[str, int]]:
+        """Returns single dict if 1 interval, or list of dicts for launchd plist."""
+        inter = self.intervals
+        return inter[0] if len(inter) == 1 else inter
 
 
 class LaunchAgent(PrivilegedCMD):
@@ -29,49 +144,33 @@ class LaunchAgent(PrivilegedCMD):
         self,
         label: str = config.DEFAULTS['plist'],
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
-        hour: int | None = None,
         launch_agents_dir: Path = Path('/Library/LaunchAgents'),
         log_dir: Path = Path('/Library/Logs'),
         logger: Any | None = None,
-        minute: int | None = None,
         package_sync: Any | None = None,
         run_at_load: bool = False,
-        schedule_dict: dict | list[dict] | None = None,
+        schedule: Any | None = None,
         target_script: Path = config.PATHS['Script']['Target'],
-        weekday: int | None = None,
     ) -> None:
-        default_schedule = config.DEFAULTS.get('schedule', {})
         self._target_plist: Path | None = None
-        self.cron_schedule = schedule_dict
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
-        self.hour = default_schedule.get('Hour', 2) if hour is None else hour
         self.label = label
         self.launch_agents_dir = launch_agents_dir
         self.log = logger or Logger(dry_run=self.dry_run)
         self.log_dir = log_dir
         self.logger = self.log
-        self.minute = default_schedule.get('Minute', 0) if minute is None else minute
         self.package_sync = package_sync or PackageSync(
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             logger=self.log,
             target_script=target_script,
-            **self.debug_vars,
         )
         self.run_at_load = run_at_load
+        self.schedule = CronSchedule.resolve(schedule, logger=self.log)
         self.sudoers = f"/etc/sudoers.d/{config.APP_INFO['Name'].lower()}"
-        self.weekday = default_schedule.get('Weekday', 0) if weekday is None else weekday
-        if self.cron_schedule is None:
-            self.cron_schedule = {
-                'Hour':    self.hour,
-                'Minute':  self.minute,
-                'Weekday': self.weekday,
-            }
 
     def _init_log_files(self) -> None:
         """Ensures stdout and stderr log files exist in log_dir with write permissions."""
@@ -201,36 +300,24 @@ class LaunchAgent(PrivilegedCMD):
 
     def build_plist_data(self) -> bytes:
         """Builds the binary plist representation for the launchd agent."""
-        schedule_cron = load_preferences().get('schedule', '')
-        if schedule_cron:
-            try:
-                self.cron_schedule = parse_cron(schedule_cron)
-            except ValueError as err:
-                self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
-                self._parse_error = True
-                return None
-
-            except Exception:
-                pass
-
         session_types = ['Aqua', 'Standard']
         if not self.run_at_load:
             session_types += ['Background', 'LoginWindow']
         plist_dict: dict[str, Any] = {
             'EnvironmentVariables':   {
                 'PATH':       '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-                'PYTHONPATH': str(self.target_dir.parent),
+                'PYTHONPATH': str(self.package_sync.target_dir.parent),
             },
             'Label':                  self.label,
             'LimitLoadToSessionType': session_types,
-            'ProgramArguments':       [self.python_bin, str(self.target_script)],
+            'ProgramArguments':       [self.python_bin, str(self.package_sync.target_script)],
             'StandardErrorPath':      f"{self.log_dir}/{self.label}.stderr.log",
             'StandardOutPath':        f"{self.log_dir}/{self.label}.stdout.log",
         }
         if self.run_at_load:
             plist_dict['RunAtLoad'] = True
         else:
-            plist_dict['StartCalendarInterval'] = self.cron_schedule or config.DEFAULTS['schedule']
+            plist_dict['StartCalendarInterval'] = self.schedule.to_launchd()
         return plistlib.dumps(plist_dict)
 
     def check_and_install(self) -> bool:
@@ -302,10 +389,9 @@ class LaunchAgent(PrivilegedCMD):
         """Checks if the service is currently registered with launchd."""
         gui_target = f"{self.domain}/{self.label}"
         return bool(
-            RunCMD(['launchctl', 'print', gui_target], **self.debug_vars) or RunCMD(
-                ['launchctl', 'list', self.label],
-                **self.debug_vars,
-            ),
+            RunCMD(['launchctl', 'print', gui_target], **self.debug_vars)
+            or
+            RunCMD(['launchctl', 'list', self.label], **self.debug_vars),
         )
 
     @property
@@ -378,19 +464,6 @@ class LaunchAgent(PrivilegedCMD):
             f"%admin ALL=(ALL) NOPASSWD: {', '.join(commands)}\n"
         )
 
-    def sync_package(self, files: list[Path] | None = None) -> bool:
-        """Synchronizes specified files (or all outdated files) to the target installation directory."""
-        return self.package_sync.sync(files)
-
-    @property
-    def target_dir(self) -> Path:
-        """Returns the package target installation directory."""
-        return self.package_sync.target_dir
-
-    @target_dir.setter
-    def target_dir(self, val: Path) -> None:
-        self.package_sync.target_dir = val
-
     @property
     def target_plist(self) -> Path:
         """Returns the system-wide LaunchAgent path in /Library/LaunchAgents."""
@@ -399,15 +472,6 @@ class LaunchAgent(PrivilegedCMD):
     @target_plist.setter
     def target_plist(self, val: Path) -> None:
         self._target_plist = val
-
-    @property
-    def target_script(self) -> Path:
-        """Returns the target script path."""
-        return self.package_sync.target_script
-
-    @target_script.setter
-    def target_script(self, val: Path) -> None:
-        self.package_sync.target_script = val
 
     def uninstall(self) -> bool:
         """Removes the launchd service from startup and unlinks installed files."""
@@ -422,10 +486,6 @@ class LaunchAgent(PrivilegedCMD):
             self.log.print_store(f"Failed to uninstall {config.APP_INFO['Name']}:\n{err_uninst}", 'LaunchAgent')
             return False
 
-    def update_files(self, target: Path | None = None) -> bool:
-        """Updates specific target file or synchronizes package files if outdated."""
-        return self.package_sync.update_files(target)
-
 
 class PackageSync(PrivilegedCMD):
     """
@@ -436,16 +496,13 @@ class PackageSync(PrivilegedCMD):
     def __init__(
         self,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         target_dir: Path = config.PATHS['Dir']['Target'],
         target_script: Path = config.PATHS['Script']['Target'],
     ) -> None:
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
@@ -561,6 +618,12 @@ class PackageSync(PrivilegedCMD):
                         f"Note: {self.target_script} remains.  To remove:\n  sudo rm {self.target_script}",
                         'PackageSync',
                     )
+        else:
+            self.log.print_store(f"Unable to find {self.target_dir}", 'PackageSync')
+            self.log.print_store(f"Unable to find {self.target_script}", 'PackageSync')
+            self.log.print_store(f"Uninstall of {config.APP_INFO['Name']} FAILED", 'PackageSync')
+            return False
+
         return True
 
     def update_files(self, target: Path | None = None) -> bool:
@@ -650,14 +713,13 @@ class SavePreferences(PrivilegedCMD):
         self,
         updates: dict[str, Any] | str | None = None,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         user_pref: bool = False,
     ) -> None:
         self._parse_error = False
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
@@ -677,9 +739,9 @@ class SavePreferences(PrivilegedCMD):
             if self.SCHEMA[key]['type'] == 'list':
                 items = value.split() if isinstance(value, str) else [str(x) for x in value]
                 result[key] = list(dict.fromkeys(x.strip().lower() for x in items if x.strip()))
-            elif self.SCHEMA[key]['type'] == 'cron' and not isinstance(value, dict):
+            elif self.SCHEMA[key]['type'] == 'cron':
                 try:
-                    result[key] = parse_cron(str(value))
+                    result[key] = CronSchedule.parse(value).to_launchd()
                 except ValueError as err:
                     self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
                     self._parse_error = True
@@ -761,7 +823,7 @@ class SavePreferences(PrivilegedCMD):
         self.log.print_store(f"Saved preferences to {target_pref}: {self.updates}", component='Preferences')
 
         if 'schedule' in self.updates:
-            agent = LaunchAgent(dry_run=self.dry_run, logger=self.log, **self.debug_vars)
+            agent = LaunchAgent(debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log)
             agent.install()
             agent.activate()
 
@@ -777,8 +839,7 @@ class StartupRun:
     def __init__(
         self,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         label: str = f"{config.DEFAULTS['plist']}_runonce",
         launch_agents_dir: Path | None = None,
@@ -786,19 +847,19 @@ class StartupRun:
         logger: Any | None = None,
         target_plist: Path | None = None,
     ) -> None:
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.label = label
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
         self.agent = LaunchAgent(
             label=self.label,
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             launch_agents_dir=launch_agents_dir or (Path.home() / 'Library/LaunchAgents'),
             log_dir=log_dir or (Path.home() / 'Library/Logs'),
             logger=self.log,
             run_at_load=True,
-            **self.debug_vars,
         )
         if target_plist is not None:
             self.agent.target_plist = target_plist
@@ -826,15 +887,6 @@ class StartupRun:
     def log_dir(self, val: Path) -> None:
         self.agent.log_dir = val
 
-    @property
-    def plist_path(self) -> Path:
-        """Returns the target plist path (backwards-compatible alias for target_plist)."""
-        return self.target_plist
-
-    @plist_path.setter
-    def plist_path(self, val: Path) -> None:
-        self.target_plist = val
-
     def remove(self) -> bool:
         """Unloads and unlinks the runonce LaunchAgent."""
         return self.agent.remove()
@@ -853,34 +905,22 @@ class StartupRun:
         self.agent.target_plist = val
 
 
-def check_data_format(some_data: Any, contains_expected: list, allowed_types: list[type] | type) -> bool:
-    if isinstance(allowed_types, type):
-        allowed_types = [allowed_types]
-    if isinstance(some_data, tuple(allowed_types)):
-        # Fuzzy check for correct input
-        check_val = str(some_data)
-        for i in contains_expected:
-            if i in check_val:
-                return True
-
-    return False
-
-
 def check_plist(
     a_plist: str = config.DEFAULTS['plist'],
     cron_dict: dict | list[dict] = config.DEFAULTS['schedule'],
     *,
+    debug_vars: dict[str, int] | None = None,
     dry_run: bool = False,
     logger: Any | None = None,
 ) -> bool:
     """Checks if .plist for this file is in /Library/LaunchAgents and active, if not, creates file and activates it."""
-    agent = LaunchAgent(label=a_plist, schedule_dict=cron_dict, dry_run=dry_run, logger=logger)
-    return agent.check_and_install()
-
-
-def cleanup_startup_run(*, logger: Any | None = None) -> bool:
-    """Unloads and removes the temporary one-shot startup LaunchAgent if present."""
-    return StartupRun.cleanup(logger=logger)
+    return LaunchAgent(
+        label=a_plist,
+        debug_vars=debug_vars,
+        dry_run=dry_run,
+        logger=logger,
+        schedule=cron_dict,
+    ).check_and_install()
 
 
 def file_needs_update(source_file: Path, target_file: Path) -> bool:
@@ -913,81 +953,13 @@ def load_preferences() -> dict[str, Any]:
         if pref_file.is_file():
             try:
                 prefs.update(plistlib.loads(pref_file.read_bytes()))
-            except Exception:
-                pass
+            except Exception as err:
+                log = Logger()
+                log.print_store(
+                    f"[Warning] Unable to load preferences file: '{pref_file}' ({err})",
+                    component='Preferences',
+                )
     return prefs
-
-
-def parse_cron(expr: str | dict[str, int] | list[dict[str, int]]) -> dict[str, int] | list[dict[str, int]]:
-    """Converts a 5-part cron expression into a launchd interval dict (or list of dicts)."""
-    keys = ['Minute', 'Hour', 'Day', 'Month', 'Weekday']
-    if check_data_format(expr, keys, [dict, list]):
-        return expr
-
-    def star_int(a_val: str) -> int | list[int] | None:
-        if ',' in a_val:
-            return [int(x) for x in a_val.split(',')]
-
-        return int(a_val) if a_val.isdigit() else None
-
-    values = expr.split()
-    if len(values) != 5:
-        raise ValueError(
-            f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields "
-            f"Got {len(values)} of 5 expected fields (minute hour day month weekday).\n"
-            "\tExample: '0 18 * * 1' (Mondays at 6:00 PM)",
-        )
-
-    values = [star_int(x) for x in values]
-
-    cron_dict = {k: v for k, v in zip(keys, values) if v is not None}
-    if not any(isinstance(v, list) for v in cron_dict.values()):
-        return cron_dict
-
-    # Multiple values, make a list of dicts for each combination
-    list_len = 1
-    for v in cron_dict.values():
-        if isinstance(v, list):
-            list_len *= len(v)
-    cron_list = [dict.fromkeys(cron_dict.keys(), 0) for _ in range(list_len)]
-    multi_dict = {}
-    for k, v in cron_dict.items():
-        if isinstance(v, int):
-            for i in range(list_len):
-                cron_list[i][k] = v
-        else:
-            multi_dict[k] = v
-    stride = list_len
-    for k, v in multi_dict.items():
-        stride //= len(v)
-        for i, val in enumerate(v):
-            for j in range(stride):
-                cron_list[i * stride + j][k] = val
-    return cron_list
-
-
-def uninstall_plist(
-    a_plist: str = config.DEFAULTS['plist'],
-    *,
-    dry_run: bool = False,
-    logger: Any | None = None,
-) -> bool:
-    """Removes the launchd service from startup and unlinks installed files."""
-    agent = LaunchAgent(label=a_plist, dry_run=dry_run, logger=logger)
-    return agent.uninstall()
-
-
-def update_installed_script(
-    a_script: str | Path | None = None,
-    *,
-    debug: int = 0,
-    debug_limit: int = 0,
-    dry_run: bool = False,
-    logger: Any | None = None,
-) -> bool:
-    """Updates installed script or package if the running files have higher builds."""
-    agent = LaunchAgent(debug=debug, debug_limit=debug_limit, dry_run=dry_run, logger=logger)
-    return agent.update_files(target=Path(a_script) if a_script else None)
 
 
 def write_file(a_path: Path, data: bytes, mode: int = 0o644) -> None:

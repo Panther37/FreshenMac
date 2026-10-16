@@ -35,7 +35,7 @@ class TestHomeBrew(unittest.TestCase):
     def test_cmd_options(self):
         """Verifies cmd_options compiles execution dictionary with custom timeout and debug settings."""
         # Arrange
-        brew = HomeBrew(is_arm=True, timeout=1200, debug=True)
+        brew = HomeBrew(is_arm=True, timeout=1200, debug_vars={'debug': 1, 'debug_limit': 0})
 
         # Act
         opts = brew.cmd_options()
@@ -43,7 +43,7 @@ class TestHomeBrew(unittest.TestCase):
         # Assert
         self.assertEqual(
             opts,
-            {'cancelable': True, 'debug': True, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
+            {'cancelable': True, 'debug': 1, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
         )
 
     def test_get_and_upgrade_casks(self):
@@ -696,7 +696,7 @@ class TestHomeBrew(unittest.TestCase):
 
         # Assert
         self.assertIsInstance(brew.xcode, Xcode)
-        self.assertEqual(brew.xcode.debug, brew.debug)
+        self.assertEqual(brew.xcode.debug_vars, brew.debug_vars)
         self.assertEqual(brew.xcode.dry_run, brew.dry_run)
 
 

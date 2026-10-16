@@ -8,7 +8,7 @@ from pathlib import Path
 
 from freshenmac.util import RunCMD, is_interactive
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261015
 
 
 class Xcode:
@@ -17,10 +17,8 @@ class Xcode:
     license agreement acceptance.
     """
 
-    def __init__(self, *, debug: int = 0, debug_limit: int = 0, dry_run: bool = False):
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+    def __init__(self, *, debug_vars: dict[str, int] | None = None, dry_run: bool = False):
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
 
     def accept_license(self) -> bool:
@@ -108,7 +106,7 @@ To accept manually, run in Terminal:
             return self.install_clt_interactive()
 
         if RunCMD.can_sudo() or os.geteuid() == 0:
-            print("[Xcode CLT] Running in unattended mode with administrator access. Attempting silent install...")
+            print("[Xcode CLT] Running in unattended mode with administrator access.  Attempting silent install...")
             return self.install_clt_headless()
 
         print(

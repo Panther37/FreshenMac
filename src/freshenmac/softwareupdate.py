@@ -10,7 +10,7 @@ from typing import Any
 from freshenmac import config, util
 from freshenmac.boot import RebootState
 
-FILE_BUILD = 20261013
+FILE_BUILD = 20261014
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Downloaded Ver':   re.compile(r"Downloaded:\s*(?:macOS\s+[A-Za-z]+\s+)?(?P<ver>\d+(?:\.\d+)+)"),
@@ -29,8 +29,7 @@ class SoftwareUpdate:
         *,
         arm_installed: bool = False,
         console_user: str = '',
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         notify_manual_fn: Callable[[str], None] | None = None,
@@ -41,7 +40,7 @@ class SoftwareUpdate:
     ) -> None:
         self.arm_installed = arm_installed
         self.console_user = console_user
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or util.Logger(dry_run=self.dry_run)
         self.notify_manual_fn = notify_manual_fn

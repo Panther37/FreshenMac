@@ -101,7 +101,7 @@ python3 FreshenMac.py --trace
 | `--trace`               |          | Maximum detail with no character limit. Same as `--debug-limit=-1 -vvvv`.                                                                                          |
 | `--no-reboot`           | `-r`     | Run all updates, but skip reboot prompts and automatic restarts.                                                                                                   |
 | `--force-reboot`        | `-f`     | Force a restart when updates finish, skipping minimum uptime checks.                                                                                               |
-| `--ignore-mas <APP...>` | `-i`     | Skip App Store apps by name or ID number (for example: `-i iPhoto 408981381`).  This is not persistent.  See `--schedule`                                          |
+| `--ignore-mas <APP...>` | `-i`     | Skip App Store apps by name or ID number (for example: `-i iPhoto 408981381`).  This is not persistent.  See `--save-prefs`                                       |
 | `--schedule [CRON]`     | `--cron` | Set or update the LaunchAgent schedule using cron syntax (e.g. `--schedule "0 18 * * 1"` or `--schedule default`). Run without arguments to view schedule options. |
 | `--save-prefs [PREF]`   | `-s`     | Save a setting permanently to your preferences file. Run `-s` alone to view all settings.                                                                          |
 | `--update`              | `-u`     | Update the installed background script if your current files have a newer build number.                                                                            |
@@ -153,6 +153,9 @@ You can save your settings so FreshenMac remembers them every time it runs. Sett
 # View all settings and their current values
 python3 FreshenMac.py --save-prefs
 
+# Set a persistent schedule using cron syntax
+python3 FreshenMac.py --save-prefs "schedule=0 18 * * 1"
+
 # Skip an App Store app by name (for example, old software like iPhoto)
 python3 FreshenMac.py --save-prefs "no-mas=iPhoto"
 
@@ -200,6 +203,7 @@ flowchart TD
 
     subgraph SystemInt["macOS System Integration - plist.py"]
         LaunchAgent["LaunchAgent: Daemon Scheduling & Sudoers"]
+        CronSched["CronSchedule: Calendar Interval Engine"]
         PkgSync["PackageSync: Script File Synchronization"]
         StartupRun["StartupRun: One-Shot Login Recovery"]
         Prefs["Preferences: Plist Read & Write"]
@@ -238,13 +242,14 @@ flowchart TD
 - `freshenmac/xcode.py`: Checks for Xcode and Command Line Tools. Accepts the license agreement and finishes setup
   tasks.
 - `freshenmac/plist.py`: Handles macOS system setup with the following core components:
+    - `CronSchedule`: Encapsulates calendar schedules, normalizes fields (`Minute`, `Hour`, `Day`, `Month`, `Weekday`),
+      parses cron expressions or launchd interval dictionaries, generates Cartesian product intervals, and reconstructs 5-part cron syntax.
     - `LaunchAgent`: Creates background schedule files in `/Library/LaunchAgents` and configures 
       `/etc/sudoers.d/freshenmac` for unattended maintenance.
     - `PackageSync`: Copies script files to `/Library/scripts/User/freshenmac` and updates them when newer builds are 
        available.
     - `StartupRun`: Creates a one-time login task to finish updating apps that were open during the main run.
     - `SavePreferences` and `load_preferences`: Reads and saves system-wide preferences in `/Library/Preferences/`.
-    - `check_data_format`: Validates schedule data structures (`dict`, `list`) containing launchd interval keys.
 - `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
 - `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`) with structured output/error tracking (
   `error_info`), executes AppleScript (`RunAppleScript`), detects active applications (`is_app_running`), handles safe 

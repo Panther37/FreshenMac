@@ -1,4 +1,5 @@
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -12,13 +13,14 @@ class TestArchitectureAndOrdering(unittest.TestCase):
     conflicts, eliminates arbitrary placement of methods, and ensures rapid navigation.
     """
 
+    INITS = ('__init__', '__post_init__')
     # Authoritative registry: mapping of module filenames to class names defined within each file
     FILES_AND_CLASSES = {
         'boot.py':           ['ActionState', 'DeferState', 'Reboot', 'RebootState'],
         'computer.py':       ['MacOS'],
         'homebrew.py':       ['HomeBrew'],
         'mas.py':            ['AppStore'],
-        'plist.py':          ['LaunchAgent', 'PackageSync', 'SavePreferences', 'StartupRun'],
+        'plist.py':          ['CronSchedule', 'LaunchAgent', 'PackageSync', 'SavePreferences', 'StartupRun'],
         'softwareupdate.py': ['SoftwareUpdate'],
         'util.py':           [
             'Logger', 'PlaySound', 'PrivilegedCMD', 'RunAppleScript', 'RunCMD', 'Runner', 'SudoKeepAlive', 'Version',
@@ -26,20 +28,49 @@ class TestArchitectureAndOrdering(unittest.TestCase):
         ],
         'xcode.py':          ['Xcode'],
     }
+    PATTERN: dict[str, re.Pattern[str]] = {
+        'noqa WPS338': re.compile(r'#\s*noqa:\s*[^#\n]*\bWPS338\b'),
+    }
 
     @classmethod
     def setUpClass(cls):
         """Parse all Python source files in src/freshenmac into AST trees once for all tests."""
         cls.pkg_dir = Path(__file__).resolve().parent.parent / 'src' / 'freshenmac'
+        cls.sources = {}
         cls.trees = {}
         for py_file in sorted(cls.pkg_dir.glob('*.py')):
-            with open(py_file, 'r', encoding='utf-8') as f:
-                cls.trees[py_file.name] = ast.parse(f.read(), filename=str(py_file))
+            content = py_file.read_text(encoding='utf-8')
+            cls.sources[py_file.name] = content.splitlines()
+            cls.trees[py_file.name] = ast.parse(content, filename=str(py_file))
+
+    def _clean_names(
+        self,
+        func_nodes: list[ast.FunctionDef | ast.AsyncFunctionDef],
+        a_filename: str,
+    ) -> list[str]:
+        """Cleans and filters method nodes into a list of method names for alphabetical validation."""
+        cleaned = []
+        for node in func_nodes:
+            if self._has_noqa_wps338(a_filename, node):
+                continue
+
+            cleaned.append(node.name)
+        return cleaned
 
     def _get_class_node(self, filename: str, class_name: str) -> ast.ClassDef:
         """Helper to retrieve an ast.ClassDef node by name from a parsed module tree."""
         tree = self.trees[filename]
         return next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+
+    def _has_noqa_wps338(self, filename: str, func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Checks if a function or method signature contains a '# noqa: WPS338' comment directive."""
+        lines = self.sources[filename]
+        start = (func_node.decorator_list[0].lineno if func_node.decorator_list else func_node.lineno) - 1
+        end = func_node.body[0].lineno - 1 if func_node.body else func_node.lineno
+        for idx in range(start, max(start + 1, end)):
+            if idx < len(lines) and self.PATTERN['noqa WPS338'].search(lines[idx]):
+                return True
+        return False
 
     def test_all_package_classes_registered(self):
         """
@@ -72,26 +103,35 @@ class TestArchitectureAndOrdering(unittest.TestCase):
         """
         Verifies that methods within each class across all files are sorted alphabetically.
 
-        Note: __init__ is excluded as the standard constructor, and arm_installed
-        in MacOS is excluded due to property dependency ordering.
+        Initializers (__init__, then __post_init__) form their own group at the top of the class.
+        All subsequent methods must be sorted alphabetically, unless exempted by '# noqa: WPS338'.
         """
         for filename, class_names in self.FILES_AND_CLASSES.items():
-            for class_name in class_names:
-                with self.subTest(file=filename, class_name=class_name):
-                    cls_node = self._get_class_node(filename, class_name)
-                    methods = [
-                        n.name for n in cls_node.body
-                        if isinstance(n, ast.FunctionDef) and all(
-                            [
-                                n.name != '__init__',
-                                (filename, class_name, n.name) != ('computer.py', 'MacOS', 'arm_installed'),
-                            ],
-                        )
+            for a_name in class_names:
+                with self.subTest(file=filename, class_name=a_name):
+                    cls_node = self._get_class_node(filename, a_name)
+                    func_nodes = [
+                        n for n in cls_node.body
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                     ]
+                    all_methods = [n.name for n in func_nodes]
+                    all_inits = [m for m in all_methods if m in self.INITS]
+                    expected_inits = [m for m in self.INITS if m in all_inits]
                     self.assertEqual(
-                        methods,
-                        sorted(methods),
-                        f"Methods of {class_name} in {filename} are not sorted: {methods}",
+                        all_inits,
+                        expected_inits,
+                        f"Initializers in {a_name} ({filename}) must be ordered __init__ then __post_init__: {all_inits}",
+                    )
+                    self.assertEqual(
+                        all_methods[:len(all_inits)],
+                        expected_inits,
+                        f"Initializers in {a_name} ({filename}) must be at the top of the class: {all_methods[:len(all_inits)]} != {expected_inits}",
+                    )
+                    remaining = self._clean_names(func_nodes[len(all_inits):], filename)
+                    self.assertEqual(
+                        remaining,
+                        sorted(remaining),
+                        f"Methods of {a_name} in {filename} after initializers are not sorted: {remaining}",
                     )
 
     def test_constants_alphabetical_order(self):
@@ -134,6 +174,24 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                             sorted(kw_args),
                             f"Keyword-only parameters of {node.name} in {filename} are not sorted: {kw_args}",
                         )
+
+    def test_noqa_wps338_directive_detection(self):
+        """Verifies _has_noqa_wps338 and _clean_names recognize '# noqa: WPS338' directives."""
+        code = (
+            "class Sample:\n"
+            "    @cached_property\n"
+            "    def custom_order(self):  # noqa: WPS338\n"
+            "        pass\n"
+            "    def normal_order(self):\n"
+            "        pass\n"
+        )
+        tree = ast.parse(code)
+        cls_node = tree.body[0]
+        self.sources['<test>'] = code.splitlines()
+        self.assertTrue(self._has_noqa_wps338('<test>', cls_node.body[0]))
+        self.assertFalse(self._has_noqa_wps338('<test>', cls_node.body[1]))
+        cleaned = self._clean_names(cls_node.body, '<test>')
+        self.assertEqual(cleaned, ['normal_order'])
 
     def test_shutdown_tests_call_guard(self):
         """

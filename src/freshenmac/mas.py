@@ -9,7 +9,7 @@ from typing import Any
 from freshenmac import boot, config, plist, util
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261012
+FILE_BUILD = 20261014
 PATTERN_MAS_UPDATE = re.compile(r"^\s*(?P<id>\d+)\s+(?P<name>.+?)\s+(?P<vers>\([^)]+\))")
 
 
@@ -20,8 +20,7 @@ class AppStore:
         self,
         *,
         brew_path: Path | None = None,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         defer: boot.DeferState | None = None,
         dry_run: bool = False,
         ignore_mas: list[str] | set[str] | None = None,
@@ -32,7 +31,7 @@ class AppStore:
 
         self._cli_ignore = set(ignore_mas) if ignore_mas else set()
         self.brew_path = brew_path
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.defer = defer if defer is not None else boot.DeferState()  # Checking existence
         self.dry_run = dry_run
         self.log = logger or util.Logger(dry_run=self.dry_run)
@@ -183,10 +182,7 @@ class AppStore:
         for app_id, app_name, version_info in updatable_apps:
             self.log.print_store(f"════ Updating {app_name} ({app_id}) ════", comp)
             try:
-                mas_upgrade = util.RunCMD(
-                    [str(self.mas_path), 'upgrade', app_id],
-                    **self.cmd_options(),
-                )
+                mas_upgrade = util.RunCMD([str(self.mas_path), 'upgrade', app_id], **self.cmd_options())
                 if not mas_upgrade:
                     fail_str = (
                         f"[Warning] 'mas upgrade {app_id}' exited with code {mas_upgrade.returncode}: "
@@ -199,7 +195,7 @@ class AppStore:
                     self.summary['updated'][app_name] = version_info or 'updated'
                     self.log.store(f"Successfully updated {app_name} ({app_id})", comp)
                     if 'xcode' in app_name.lower() or app_id == '497799835':
-                        Xcode(dry_run=self.dry_run, **self.debug_vars).check_and_fix_license()
+                        Xcode(debug_vars=self.debug_vars, dry_run=self.dry_run).check_and_fix_license()
                 else:
                     self.summary['unchanged'][app_name] = version_info or 'already up to date'
             except KeyboardInterrupt:
