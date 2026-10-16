@@ -134,7 +134,7 @@ class AppStore:
         self.log.print_store(f"Found {len(found_updates)} {comp} update{'s' if len(found_updates) != 1 else ''}:", comp)
         for app_id, app_name, version_info in found_updates:
             ver_display = f" ({version_info})" if version_info else ""
-            self.log.print(f"  • {app_id}  {app_name} {ver_display}".rstrip())
+            self.log.printf(f"  • {app_id}  {app_name} {ver_display}".rstrip())
 
         has_running_app = False
         updatable_apps = []
@@ -165,7 +165,7 @@ class AppStore:
         if not util.RunCMD.can_sudo():
             interactive_shell = util.is_interactive()
             if interactive_shell:
-                self.log.print(
+                self.log.printf(
                     f"\n[Permission Required] Administrator privileges needed to update "
                     f"{len(updatable_apps)} App Store app{'s' if len(updatable_apps) != 1 else ''}:\n"
                     "Prompting for sudo password...\n",

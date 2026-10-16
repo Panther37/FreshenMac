@@ -76,7 +76,7 @@ Run the script directly in your Terminal:
 python3 FreshenMac.py
 
 # Run updates without restarting your computer
-python3 FreshenMac.py --no-reboot
+python3 FreshenMac.py -r skip
 
 # Show more details while running
 python3 FreshenMac.py -v
@@ -99,8 +99,8 @@ python3 FreshenMac.py --trace
 | `--verbose`             | `-v`     | Show more detail (`-v`, `-vv`, etc.). Also limits output to 10,000 characters unless you set `--debug-limit`.                                                      |
 | `--debug-limit <N>`     | `-l <N>` | Set a custom character limit for logs (use a negative number for unlimited).                                                                                       |
 | `--trace`               |          | Maximum detail with no character limit. Same as `--debug-limit=-1 -vvvv`.                                                                                          |
-| `--no-reboot`           | `-r`     | Run all updates, but skip reboot prompts and automatic restarts.                                                                                                   |
-| `--force-reboot`        | `-f`     | Force a restart when updates finish, skipping minimum uptime checks.                                                                                               |
+| `--reboot <OPTION>`     | `-r`     | Reboot mode: `force`, `skip`, or `default` (case-insensitive). Overrides reboot requirements.                                       |
+| `--action <VERB>`       | `-a`     | Run management action (`Install`, `Update`, or `Uninstall`).                                                                       |
 | `--ignore-mas <APP...>` | `-i`     | Skip App Store apps by name or ID number (for example: `-i iPhoto 408981381`).  This is not persistent.  See `--save-prefs`                                       |
 | `--schedule [CRON]`     | `--cron` | Set or update the LaunchAgent schedule using cron syntax (e.g. `--schedule "0 18 * * 1"` or `--schedule default`). Run without arguments to view schedule options. |
 | `--save-prefs [PREF]`   | `-s`     | Save a setting permanently to your preferences file. Run `-s` alone to view all settings.                                                                          |

@@ -102,12 +102,12 @@ class TestCronSchedule(unittest.TestCase):
         """Verifies parse raises ValueError on invalid cron tokens or unsupported types."""
         with self.assertRaises(ValueError) as ctx:
             CronSchedule.parse("0 6 *")
-        self.assertIn("Got 3 of 5 expected fields (minute hour day month weekday)", str(ctx.exception))
-        self.assertIn("Example: '0 18 * * 1' (Mondays at 6:00 PM)", str(ctx.exception))
+        self.assertIn("Expected 5 fields, got 3.", str(ctx.exception))
+        self.assertIn('Example: "0 18 * * 1" (Mondays at 6:00 PM)', str(ctx.exception))
 
         with self.assertRaises(ValueError) as ctx2:
             CronSchedule.parse("1 2 3 4 5 6")
-        self.assertIn("Got 6 of 5 expected fields (minute hour day month weekday)", str(ctx2.exception))
+        self.assertIn("Expected 5 fields, got 6.", str(ctx2.exception))
 
         with self.assertRaises(ValueError):
             CronSchedule.parse(12345)
@@ -707,12 +707,12 @@ class TestSavePreferences(unittest.TestCase):
         calls = [c[0][0] for c in mock_logger.print_store.call_args_list]
         self.assertTrue(any("[Error] Invalid schedule:" in call for call in calls))
 
-    def test_print_help_uses_logger_print(self):
+    def test_print_help_uses_logger_printf(self):
         """Verifies print_help outputs documentation via configured logger."""
         mock_logger = MagicMock()
         pref = SavePreferences(dry_run=True, logger=mock_logger)
         pref.print_help()
-        self.assertTrue(mock_logger.print.called)
+        self.assertTrue(mock_logger.printf.called)
 
     def test_save_dry_run_logs(self):
         """Verifies dry-run save logs intentions without modifying preferences."""

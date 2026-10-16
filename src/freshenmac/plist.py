@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261015
+FILE_BUILD = 20261016
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
@@ -45,22 +45,30 @@ class CronSchedule:
         """Parses a 5-part cron string into a CronSchedule."""
         values = expr.split()
         if len(values) != 5:
+            if str(values).lower() == 'help':
+                print(cls.help())
+                return cls()
+
             raise ValueError(
-                f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields "
-                f"Got {len(values)} of 5 expected fields (minute hour day month weekday).\n"
-                "\tExample: '0 18 * * 1' (Mondays at 6:00 PM)",
+                f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields, got {len(values)}.\n{cls.help()}",
             )
 
         def parse_part(val: str) -> list[int]:
             if val == '*':
                 return []
             if ',' in val:
-                return sorted({int(x) for x in val.split(',') if x.strip().isdigit()})
+                return sorted(
+                    {int(x) for x in val.split(',') if x.strip().isdigit()}
+                )
             if val.isdigit():
                 return [int(val)]
             return []
 
-        return cls(fields={k: parse_part(v) for k, v in zip(cls.KEYS, values)})
+        return cls(
+            fields={
+                k: parse_part(v) for k, v in zip(cls.KEYS, values)
+            }
+        )
 
     @classmethod
     def from_dicts(cls, data: dict[str, Any] | list[dict[str, Any]]) -> CronSchedule:
@@ -72,6 +80,18 @@ class CronSchedule:
         for j in cls.KEYS:
             fields[j] = sorted(set(fields[j]))
         return cls(fields=fields)
+
+    @staticmethod
+    def help() -> str:
+        return '\n\t'.join(
+            [
+                '',
+                '─────── Schedule: HELP ───────',
+                '5 expected fields (minute hour day month weekday).',
+                'Example: "0 18 * * 1" (Mondays at 6:00 PM)',
+                '──────────────────────────────',
+            ],
+        )
 
     @property
     def intervals(self) -> list[dict[str, int]]:
@@ -741,6 +761,10 @@ class SavePreferences(PrivilegedCMD):
                 result[key] = list(dict.fromkeys(x.strip().lower() for x in items if x.strip()))
             elif self.SCHEMA[key]['type'] == 'cron':
                 try:
+                    if isinstance(value, str) and value.lower() == 'help':
+                        self.log.printf(CronSchedule.help())
+                        return None
+
                     result[key] = CronSchedule.parse(value).to_launchd()
                 except ValueError as err:
                     self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
@@ -774,7 +798,7 @@ class SavePreferences(PrivilegedCMD):
         return self._normalize({key: value})
 
     def print_help(self) -> None:
-        self.log.print(
+        self.log.printf(
             f"\n{config.APP_INFO['Name']} Preferences:\n"
             f"▷ {config.PATHS['Prefs']['Default']}\n▷ {config.PATHS['Prefs']['User']}\n",
         )
@@ -790,7 +814,7 @@ class SavePreferences(PrivilegedCMD):
                 help_line.append(f"\tNote:     {a_note}")
             help_line.append(a_line)
             help_display.append('\n'.join(help_line))
-        self.log.print(f"\n".join(help_display))
+        self.log.printf(f"\n".join(help_display))
 
     def save(self) -> bool:
         if not self.updates:
@@ -798,7 +822,7 @@ class SavePreferences(PrivilegedCMD):
             return not self._parse_error
 
         if self.debug_vars['debug'] > 1:
-            self.log.print(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
+            self.log.printf(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
 
         target_pref = config.PATHS['Prefs']['User'] if self.user_pref else config.PATHS['Prefs']['Default']
         prefs = load_preferences()

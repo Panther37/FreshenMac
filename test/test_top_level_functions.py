@@ -34,7 +34,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch('freshenmac.computer.MacOS') as mock_mac_cls, \
             patch('freshenmac.plist.check_plist'), \
             patch('freshenmac.plist.PackageSync.update_files'), \
-            patch('sys.argv', ['freshenmac.py', '-f', '-l', '500']):
+            patch('sys.argv', ['freshenmac.py', '-r', 'force', '-l', '500']):
             mock_mac = mock_mac_cls.return_value
 
             # Act
@@ -220,15 +220,15 @@ class TestTopLevelFunctions(unittest.TestCase):
         """Verifies yield_arguments handles -a / --action flag correctly."""
         with patch('sys.argv', ['freshenmac.py', '-a', 'install']):
             opts = yield_arguments()
-            self.assertEqual(opts.action, 'install')
+            self.assertEqual(opts.action, 'Install')
 
         with patch('sys.argv', ['freshenmac.py', '--action', 'update']):
             opts = yield_arguments()
-            self.assertEqual(opts.action, 'update')
+            self.assertEqual(opts.action, 'Update')
 
         with patch('sys.argv', ['freshenmac.py', '--action', 'uninstall']):
             opts = yield_arguments()
-            self.assertEqual(opts.action, 'uninstall')
+            self.assertEqual(opts.action, 'Uninstall')
 
     def test_yield_arguments_default(self):
         """Verifies yield_arguments parses default options in interactive and non-interactive sessions."""
@@ -236,7 +236,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch('sys.argv', ['freshenmac.py']), \
             patch('freshenmac.util.is_interactive', return_value=True):
             opts = yield_arguments()
-            self.assertEqual(opts.action, 'default')
+            self.assertIsNone(opts.action)
             self.assertEqual(opts.debug_vars, {'debug': 0, 'debug_limit': 0})
             self.assertEqual(opts.reboot, 0)
             self.assertFalse(opts.spinner)
@@ -249,24 +249,28 @@ class TestTopLevelFunctions(unittest.TestCase):
             self.assertFalse(opts.update)
 
     def test_yield_arguments_flags(self):
-        """Verifies yield_arguments parses short option flags (-f, -n, -v, -z)."""
-        with patch('sys.argv', ['freshenmac.py', '-f', '-v']):
+        """Verifies yield_arguments parses short option flags (-r, -v, -z)."""
+        with patch('sys.argv', ['freshenmac.py', '-r', 'force', '-v']):
             opts = yield_arguments()
             self.assertEqual(opts.reboot, 1)
             self.assertEqual(opts.debug_vars, {'debug': 1, 'debug_limit': 0})
 
-        with patch('sys.argv', ['freshenmac.py', '-n']):
+        with patch('sys.argv', ['freshenmac.py', '-r', 'skip']):
             opts = yield_arguments()
             self.assertEqual(opts.reboot, -1)
+
+        with patch('sys.argv', ['freshenmac.py', '-r', 'default']):
+            opts = yield_arguments()
+            self.assertEqual(opts.reboot, 0)
+
+        with patch('sys.argv', ['freshenmac.py', '-r']):
+            with self.assertRaises(SystemExit):
+                yield_arguments()
 
         with patch('sys.argv', ['freshenmac.py', '-z']):
             opts = yield_arguments()
             self.assertTrue(opts.standalone)
             self.assertFalse(opts.update)
-
-        with patch('sys.argv', ['freshenmac.py', '-v']):
-            opts = yield_arguments()
-            self.assertEqual(opts.debug_vars, {'debug': 1, 'debug_limit': 0})
 
     def test_yield_arguments_ignore_mas(self):
         """Verifies yield_arguments parses --ignore-mas, --skip-mas, and -i aliases."""
@@ -286,7 +290,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         """Verifies yield_arguments parses -s and --save-prefs options."""
         with patch('sys.argv', ['freshenmac.py', '-s']):
             opts = yield_arguments()
-            self.assertEqual(opts.save_prefs, '')
+            self.assertEqual(opts.save_prefs, 'help')
 
         with patch('sys.argv', ['freshenmac.py', '--save-prefs', 'Schedule=0 6 * * 1']):
             opts = yield_arguments()
@@ -296,7 +300,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         """Verifies yield_arguments parses --schedule and --cron aliases."""
         with patch('sys.argv', ['freshenmac.py', '--schedule']):
             opts = yield_arguments()
-            self.assertIsNone(opts.schedule)
+            self.assertEqual(opts.schedule, 'help')
 
         with patch('sys.argv', ['freshenmac.py', '--schedule', '0 6 * * 1']):
             opts = yield_arguments()

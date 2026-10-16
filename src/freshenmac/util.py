@@ -20,7 +20,7 @@ from typing import Any, IO
 
 from freshenmac import config
 
-FILE_BUILD = 20261015
+FILE_BUILD = 20261016
 PATTERN = {
     'Word': re.compile(r"\w+"),
 }
@@ -116,19 +116,19 @@ class Logger:
         # Stage 5: Unrecoverable failure - disable logging
         self._disable_logger(an_error)
 
-    @staticmethod
-    def print(message: str = '') -> None:
-        """Outputs string to screen (stdout)."""
-        print(message)
-
     def print_store(
         self,
         message: str,
         component: str | None = None,
     ) -> None:
         """Both prints to screen and stores formatted string to log file."""
-        self.print(message)
+        self.printf(message)
         self.store(message, component=component)
+
+    @staticmethod
+    def printf(message: str = '') -> None:
+        """Outputs string to screen (stdout)."""
+        print(message)
 
     def store(
         self,
@@ -203,7 +203,7 @@ class PrivilegedCMD:
         tmp_pref.write_bytes(data)
         ok = self.run_privileged(
             ['sh', '-c', f"cp '{tmp_pref}' '{target_pref}' && chmod 644 '{target_pref}'"],
-            name_running=f"  - Prefs: {target_pref}",
+            name_running=f"  ▷ Prefs: {target_pref}",
         )
         tmp_pref.unlink(missing_ok=True)
         return ok

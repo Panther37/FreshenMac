@@ -17,7 +17,33 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261015
+FILE_BUILD = 20261016
+REBOOT_STR = {
+    'Force':   ['FORCE', 'YES'],
+    'Default': ['DEFAULT'],
+    'Skip':    ['NO', 'SKIP'],
+}
+
+
+def actions(some_options: argparse.Namespace, logger: Any | None = None) -> bool:
+    if some_options.action == 'Uninstall':
+        return plist.LaunchAgent(debug_vars=some_options.debug_vars).uninstall()
+    if some_options.action == 'Install':
+        return all(
+            [
+                plist.LaunchAgent(debug_vars=some_options.debug_vars).check_and_install(),
+                plist.PackageSync(debug_vars=some_options.debug_vars).update_files(),
+            ],
+        )
+    if some_options.action == 'Update':
+        return plist.PackageSync(debug_vars=some_options.debug_vars).update_files()
+
+    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
+    logger.print_store(
+        f"\n[Error] main.actions.some_options.action: No instructions for action: {some_options.action}\n",
+        component='Main',
+    )
+    return False
 
 
 def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = None) -> bool:
@@ -35,31 +61,19 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
             print(f"Arguments: {sys.argv}")
             print(f"Options: {vars(options)}")
 
-    if options.action != 'default':
-        if options.action == 'uninstall':
-            return plist.LaunchAgent(debug_vars=options.debug_vars).uninstall()
-        if options.action == 'install':
-            return all(
-                [
-                    plist.LaunchAgent(debug_vars=options.debug_vars).check_and_install(),
-                    plist.PackageSync(debug_vars=options.debug_vars).update_files(),
-                ],
-            )
-        if options.action == 'update':
-            return plist.PackageSync(debug_vars=options.debug_vars).update_files()
+    logger = util.Logger(dry_run=getattr(options, 'dry_run', False))
+    logger.store('-', component='- Start -')
 
-    if options.schedule is None:
-        options.schedule = 'Help'
-    elif 'default' in options.schedule.lower():
-        options.schedule = DEFAULTS['schedule']
+    if options.action:
+        return actions(options, logger)
 
-    if schedule := options.schedule:
-        if isinstance(schedule, str) and schedule.lower() == 'help':
-            return plist.SavePreferences(debug_vars=options.debug_vars).save()
-        return plist.SavePreferences({'schedule': schedule}, debug_vars=options.debug_vars).save()
+    if options.schedule:
+        if 'default' in options.schedule.lower():
+            options.schedule = DEFAULTS['schedule']
+        return plist.SavePreferences({'schedule': options.schedule}, debug_vars=options.debug_vars).save()
 
-    if (save_prefs := options.save_prefs) is not None:
-        return plist.SavePreferences(save_prefs, debug_vars=options.debug_vars).save()
+    if options.save_prefs is not None:
+        return plist.SavePreferences(options.save_prefs, debug_vars=options.debug_vars).save()
 
     if options.spinner:
         return spinner_test()
@@ -101,9 +115,9 @@ def perform_updates(
     some_options: argparse.Namespace,
     console_user: str | None = None,
     user_password: str | None = None,
+    logger: Any | None = None,
 ) -> bool:
-    dry_run = getattr(some_options, 'dry_run', False)
-    logger = util.Logger(dry_run=dry_run)
+    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
     logger.store(
         f"{APP_INFO['Name']} {APP_INFO['Version']} started by {console_user} (options: {vars(some_options)})",
         component='Main',
@@ -194,7 +208,7 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         'These options change your persistent preferences',
     )
     pref_group.add_argument(
-        '-s', '--save-prefs', nargs='?', const='', default=None,
+        '-s', '--save-prefs', const='help', default=None, nargs='?',
         metavar='PREF',
         help=(
             'Save a preference, e.g. `schedule=0 6 * * 1` or `no-mas=iPhoto 408981381`.  '
@@ -202,26 +216,9 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     pref_group.add_argument(
-        '--schedule', '--cron', dest='schedule', nargs='?', type=str, default='',
+        '--schedule', '--cron', const='help', default=None, dest='schedule', nargs='?', type=str,
         metavar='CRON',
         help='Set or update the LaunchAgent schedule using cron syntax (e.g. `0 6 * * 1` or `0 6 1,15 * *`)',
-    )
-
-    boot_group = parser.add_argument_group(
-        'Reboot Options',
-        "These options change if your computer is going to reboot or not.  Pick one, don't use them all.",
-    )
-    boot_group.add_argument(
-        '-f', '--force-reboot', action='store_true', default=False,
-        help='Force a reboot at the end of updates, bypassing requirement checks',
-    )
-    boot_group.add_argument(
-        '-n', '--no-reboot', action='store_true', default=False,
-        help='Do not attempt to reboot',
-    )
-    boot_group.add_argument(
-        '-r', '--reboot', type=int, default=0,
-        help='Default: `0`, Force Reboot: `1`, Skip Reboots: `-1`',
     )
 
     cli_group = parser.add_argument_group(
@@ -230,11 +227,19 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
     )
     cli_group.add_argument(
         '-a', '--action',
-        default='default',
+        choices=['Install', 'Uninstall', 'Update'],
+        help=f"`Install`, `Update`, or `Uninstall` {APP_INFO['Name']}.  Will not run script.  Case insensitive.",
         metavar='VERB',
-        choices=['install', 'uninstall', 'update'],
-        help=f"`Install`, `Update`, or `Uninstall` {APP_INFO['Name']}.  Will not run script.",
+        type=str.title,
     )
+    cli_group.add_argument(
+        '-r', '--reboot',
+        choices=sum(REBOOT_STR.values(), []),
+        default=0,
+        help='Reboot: FORCE, or SKIP reboot at the end of updates, bypassing checks.  Case insensitive.',
+        type=str.upper,
+    )
+    cli_group.add_argument('--dry-run', action='store_true', default=False, help='Dry run, for testing')
     cli_group.add_argument(
         '-i', '--ignore-mas', '--skip-mas', '--skip-app',
         dest='ignore_mas', nargs='+', default=None,
@@ -262,11 +267,15 @@ def yield_rules(flags: argparse.Namespace) -> argparse.Namespace:
     else:
         flags.update = util.is_interactive()
 
-    flags.reboot += int(vars(flags).pop('force_reboot'))
-    flags.reboot -= int(vars(flags).pop('no_reboot'))
-    flags.action = flags.action.lower()
-    if flags.schedule:
-        flags.schedule = flags.schedule.lower()
+    if flags.reboot:
+        reboot_check = str(flags.reboot).upper()
+        if reboot_check in REBOOT_STR['Force']:
+            flags.reboot = 1
+        elif reboot_check in REBOOT_STR['Skip']:
+            flags.reboot = -1
+        else:
+            flags.reboot = 0
+
     flags.debug_vars = {'debug': vars(flags).pop('debug'), 'debug_limit': vars(flags).pop('debug_limit')}
 
     if flags.trace:
