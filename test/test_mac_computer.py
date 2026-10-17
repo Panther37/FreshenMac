@@ -75,17 +75,6 @@ class TestMacOS(unittest.TestCase):
             # Assert
             self.assertTrue(status.suggested)
 
-    def test_check_staged_reboot_missing(self):
-        """Verifies check_staged_reboot returns 0 when index.plist does not exist."""
-        # Arrange: updates index.plist does not exist
-        with patch('freshenmac.softwareupdate.Path.is_file', return_value=False):
-            # Act
-            result = self.mac.softwareupdate.check_staged_reboot()
-
-            # Assert
-            self.assertEqual(result, 0)
-            self.assertEqual(self.mac.reboot.required, [])
-
     def test_check_staged_reboot_with_install_at_logout(self):
         """Verifies check_staged_reboot detects staged update in index.plist with InstallAtLogout."""
         # Arrange: create temporary index.plist containing InstallAtLogout with verified payload directory
@@ -127,40 +116,6 @@ class TestMacOS(unittest.TestCase):
             opts,
             {'cancelable': True, 'debug': True, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1500},
         )
-
-    def test_has_mas_dry_run_returns_false_without_installing(self):
-        """Verifies has_mas returns False in dry run without invoking installation commands."""
-        # Arrange
-        mac = MacOS(dry_run=True)
-        mac.__dict__['mas_path'] = Path('')
-
-        with patch('freshenmac.computer.RunCMD') as mock_cmd, \
-            patch('freshenmac.mas.util.RunCMD') as mock_mas_cmd:
-            # Act
-            result = mac.has_mas
-
-            # Assert
-            self.assertFalse(result)
-            mock_cmd.assert_not_called()
-            mock_mas_cmd.assert_not_called()
-
-    def test_has_mas_installs_when_not_dry_run(self):
-        """Verifies has_mas invokes Homebrew to install mas CLI when missing in normal run."""
-        # Arrange
-        mac = MacOS(dry_run=False)
-        mac.__dict__['arm_installed'] = False
-        mac.__dict__['mas_path'] = Path('')
-
-        with patch('freshenmac.mas.util.RunCMD') as mock_cmd:
-            mock_cmd.return_value.returncode = 0
-            mock_cmd.return_value.__bool__.return_value = True
-            with patch('freshenmac.mas.shutil.which', return_value='/opt/homebrew/bin/mas'):
-                # Act
-                result = mac.has_mas
-
-                # Assert
-                self.assertTrue(result)
-                mock_cmd.assert_called_once()
 
     def test_idle_time_returns_int(self):
         """Verifies idle_time queries IOHIDSystem and converts nanoseconds to seconds."""

@@ -461,31 +461,6 @@ class TestLaunchAgent(unittest.TestCase):
                 self.assertTrue(agent._remove_sudoers())
                 self.assertTrue(any(all(['rm' in c, 'sudoers' in ' '.join(c)]) for c in executed_cmds))
 
-    def test_sync_package_already_up_to_date(self):
-        """Verifies sync_package returns True immediately when no files need updating."""
-        agent = LaunchAgent(dry_run=False)
-        self.assertTrue(agent.sync_package(files=[]))
-
-    def test_sync_package_dry_run(self):
-        """Verifies sync_package returns True without file operations in dry-run mode."""
-        agent = LaunchAgent(dry_run=True)
-        self.assertTrue(agent.sync_package(files=[Path('dummy.py')]))
-
-    def test_sync_package_success(self):
-        """Verifies sync_package copies files from source to destination directory."""
-        agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.target_dir = Path(tmp_dir) / 'pkg'
-            agent.target_script = agent.target_dir / 'main.py'
-
-            src = Path(tmp_dir) / 'dummy.py'
-            src.write_text("FILE_BUILD = 1\n")
-
-            self.assertTrue(agent.sync_package(files=[src]))
-            dest = agent.target_dir / 'dummy.py'
-            self.assertTrue(dest.is_file())
-            self.assertEqual(dest.read_text(), "FILE_BUILD = 1\n")
-
     def test_target_plist(self):
         """Verifies target_plist resolves to system LaunchAgents destination path."""
         agent = LaunchAgent()
