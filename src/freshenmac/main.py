@@ -16,7 +16,28 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261010
+FILE_BUILD = 20261016
+
+
+def actions(some_options: argparse.Namespace, logger: Any | None = None) -> bool:
+    if some_options.action == 'Uninstall':
+        return plist.LaunchAgent(debug=some_options.debug, debug_limit=some_options.debug_limit).uninstall()
+    if some_options.action == 'Install':
+        return all(
+            [
+                plist.LaunchAgent(debug=some_options.debug, debug_limit=some_options.debug_limit).check_and_install(),
+                plist.PackageSync(debug=some_options.debug, debug_limit=some_options.debug_limit).update_files(),
+            ],
+        )
+    if some_options.action == 'Update':
+        return plist.PackageSync(debug=some_options.debug, debug_limit=some_options.debug_limit).update_files()
+
+    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
+    logger.print_store(
+        f"\n[Error] main.actions.some_options.action: No instructions for action: {some_options.action}\n",
+        component='Main',
+    )
+    return False
 
 
 def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = None) -> bool:
@@ -34,8 +55,11 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
             print(f"Arguments: {sys.argv}")
             print(f"Options: {vars(options)}")
 
-    if options.uninstall:
-        return plist.uninstall_plist()
+    logger = util.Logger(dry_run=getattr(options, 'dry_run', False))
+    logger.store('-', component='- Start -')
+
+    if options.action:
+        return actions(options, logger)
 
     if options.schedule is None:
         options.schedule = 'Help'
@@ -92,10 +116,10 @@ def perform_updates(
     some_options: argparse.Namespace,
     console_user: str | None = None,
     user_password: str | None = None,
+    logger: Any | None = None,
 ) -> bool:
     debug_vars = {'debug': some_options.debug, 'debug_limit': some_options.debug_limit}
-    dry_run = getattr(some_options, 'dry_run', False)
-    logger = util.Logger(dry_run=dry_run)
+    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
     logger.store(
         f"{APP_INFO['Name']} {APP_INFO['Version']} started by {console_user} (options: {vars(some_options)})",
         component='Main',
@@ -149,7 +173,7 @@ def spinner_test() -> bool:
     return True
 
 
-def yield_arguments(some_args: list[str] | None = None):
+def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
     """Processes runtime arguments"""
     if some_args is None:
         some_args = sys.argv[1:]
@@ -157,12 +181,12 @@ def yield_arguments(some_args: list[str] | None = None):
     parser = argparse.ArgumentParser(prog=APP_INFO['Name'])
 
     out_group = parser.add_argument_group(
-        "Output Options",
-        "These options change the output to your terminal",
+        'Output Options',
+        'These options change the output to your terminal',
     )
     out_group.add_argument(
         '-v', '--verbose', dest='debug', action='count', default=0,
-        help='Increase output verbosity. '
+        help='Increase output verbosity.  '
              f"Limits output to {DEFAULTS['Debug Limit']} characters unless specified with `--debug-limit`",
     )
     out_group.add_argument(
@@ -182,14 +206,14 @@ def yield_arguments(some_args: list[str] | None = None):
     )
 
     pref_group = parser.add_argument_group(
-        "Preference Options",
-        "These options change your persistent preferences",
+        'Preference Options',
+        'These options change your persistent preferences',
     )
     pref_group.add_argument(
         '-s', '--save-prefs', nargs='?', const='', default=None,
         metavar='PREF',
         help=(
-            'Save a preference, e.g. "schedule=0 6 * * 1" or "no-mas=iPhoto 408981381".  '
+            'Save a preference, e.g. `schedule=0 6 * * 1` or `no-mas=iPhoto 408981381`.  '
             'Run with no value to see all options.'
         ),
     )
@@ -223,21 +247,27 @@ def yield_arguments(some_args: list[str] | None = None):
     )
 
     cli_group = parser.add_argument_group(
-        "CLI Options",
-        "Options only available using the command line interface",
+        'CLI Options',
+        'Options only available using the command line interface',
     )
     cli_group.add_argument(
-        '-i', '--ignore-mas', '--skip-mas', '--ignore-app-store', '--skip-app-store',
+        '-a', '--action',
+        choices=['Install', 'Uninstall', 'Update'],
+        help=f"`Install`, `Update`, or `Uninstall` {APP_INFO['Name']}.  Will not run script.  Case insensitive.",
+        metavar='VERB',
+        type=str.title,
+    )
+    cli_group.add_argument(
+        '-i', '--ignore-mas', '--skip-mas', '--skip-app',
         dest='ignore_mas', nargs='+', default=None,
         metavar='APP',
         help='Skip specified App Store application(s) by name or ID for this execution only.',
     )
-    cli_group.add_argument(
-        '--uninstall', action='store_true', default=False,
-        help=f"Remove {APP_INFO['Name']} service from startup (unloads and deletes launch agent)",
-    )
+    cli_group.add_argument('--version', action='version', version=f"{APP_INFO['Name']} {APP_INFO['Version']}")
+    return yield_rules(parser.parse_args(some_args))
 
-    args = parser.parse_args(some_args)
+
+def yield_rules(args: argparse.Namespace) -> argparse.Namespace:
     if getattr(args, 'trace', False):
         args.debug = 9
         args.debug_limit = -1

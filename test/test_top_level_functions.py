@@ -1,18 +1,13 @@
 import argparse
-import tempfile
+import io
 import unittest
-from pathlib import Path
 from unittest.mock import ANY, call, patch
 
+from freshenmac.config import APP_INFO
 from freshenmac.main import (
-    FILE_BUILD,
+    actions,
     main,
     yield_arguments,
-)
-from freshenmac.plist import (
-    check_plist,
-    uninstall_plist,
-    update_installed_script,
 )
 
 
@@ -36,15 +31,40 @@ class TestTopLevelFunctions(unittest.TestCase):
         self._getpass_patcher.stop()
         self._can_sudo_patcher.stop()
 
-    def test_check_plist_dry_run(self):
-        """Verifies check_plist delegates to LaunchAgent.check_and_install with dry_run flag."""
-        # Arrange & Act
-        with patch('freshenmac.plist.LaunchAgent.check_and_install', return_value=True) as mock_install:
-            result = check_plist(dry_run=True)
+    def test_actions(self):
+        """Verifies actions handles Install, Update, Uninstall, and unknown verbs."""
+        # Install
+        with patch('freshenmac.plist.LaunchAgent.check_and_install', return_value=True) as mock_agent, \
+            patch('freshenmac.plist.PackageSync.update_files', return_value=True) as mock_sync:
+            self.assertTrue(actions(argparse.Namespace(action='Install', debug=0, debug_limit=0)))
+            mock_agent.assert_called_once()
+            mock_sync.assert_called_once()
+
+        # Update
+        with patch('freshenmac.plist.PackageSync.update_files', return_value=True) as mock_sync:
+            self.assertTrue(actions(argparse.Namespace(action='Update', debug=0, debug_limit=0)))
+            mock_sync.assert_called_once()
+
+        # Uninstall
+        with patch('freshenmac.plist.LaunchAgent.uninstall', return_value=True) as mock_uninstall:
+            self.assertTrue(actions(argparse.Namespace(action='Uninstall', debug=0, debug_limit=0)))
+            mock_uninstall.assert_called_once()
+
+        # Unknown action
+        self.assertFalse(actions(argparse.Namespace(action='NonExistent', dry_run=True)))
+
+    def test_main_action(self):
+        """Verifies main delegates directly to actions() when --action is provided."""
+        # Arrange
+        with patch('freshenmac.main.actions', return_value=True) as mock_actions, \
+            patch('sys.argv', ['freshenmac.py', '--action', 'Install']):
+
+            # Act
+            res = main()
 
             # Assert
-            self.assertTrue(result)
-            mock_install.assert_called_once()
+            self.assertTrue(res)
+            mock_actions.assert_called_once()
 
     def test_main_forwards_cli_flags_to_macos(self):
         """Verifies main forwards force_reboot and debug options to MacOS constructor."""
@@ -227,50 +247,19 @@ class TestTopLevelFunctions(unittest.TestCase):
             mock_update_script.assert_not_called()
             mock_mac.update.assert_called_once_with('all')
 
-    def test_uninstall_plist(self):
-        """Verifies uninstall_plist unloads and removes daemon, LaunchAgent, and helper files."""
-        # Arrange
-        with patch('freshenmac.util.RunCMD') as mock_util_cmd, \
-            patch('freshenmac.plist.RunCMD') as mock_cmd, \
-            patch('freshenmac.plist.Path.is_file', return_value=False), \
-            patch('freshenmac.plist.Path.is_dir', return_value=False), \
-            patch('freshenmac.plist.StartupRun.cleanup'):
-            mock_cmd.return_value.returncode = 0
-            mock_util_cmd.return_value.returncode = 0
+    def test_yield_arguments_action(self):
+        """Verifies yield_arguments parses -a and --action flags and normalizes to title case."""
+        with patch('sys.argv', ['freshenmac.py', '-a', 'install']):
+            opts = yield_arguments()
+            self.assertEqual(opts.action, 'Install')
 
-            # Act
-            result = uninstall_plist()
+        with patch('sys.argv', ['freshenmac.py', '--action', 'uninstall']):
+            opts = yield_arguments()
+            self.assertEqual(opts.action, 'Uninstall')
 
-            # Assert
-            self.assertTrue(result)
-
-    def test_update_installed_script_already_current(self):
-        """Verifies update_installed_script does not rewrite script when build is already current."""
-        # Arrange
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake_target = Path(temp_dir) / 'installed_freshenmac.py'
-            fake_target.write_text(f"FILE_BUILD = {FILE_BUILD + 1}\n", encoding='utf-8')
-
-            # Act
-            result = update_installed_script(a_script=str(fake_target))
-
-            # Assert: content preserved
-            self.assertTrue(result)
-            self.assertIn(f"FILE_BUILD = {FILE_BUILD + 1}", fake_target.read_text(encoding='utf-8'))
-
-    def test_update_installed_script_lower_build(self):
-        """Verifies update_installed_script replaces outdated script build with current build."""
-        # Arrange
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake_target = Path(temp_dir) / 'installed_freshenmac.py'
-            fake_target.write_text("FILE_BUILD = 0\n", encoding='utf-8')
-
-            # Act
-            result = update_installed_script(a_script=str(fake_target))
-
-            # Assert: updated to current build
-            self.assertTrue(result)
-            self.assertIn(f"FILE_BUILD = {FILE_BUILD}", fake_target.read_text(encoding='utf-8'))
+        with patch('sys.argv', ['freshenmac.py', '--action', 'UPDATE']):
+            opts = yield_arguments()
+            self.assertEqual(opts.action, 'Update')
 
     def test_yield_arguments_default(self):
         """Verifies yield_arguments parses default options in interactive and non-interactive sessions."""
@@ -278,11 +267,11 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch('sys.argv', ['freshenmac.py']), \
             patch('sys.stdin.isatty', return_value=True):
             opts = yield_arguments()
+            self.assertIsNone(opts.action)
             self.assertFalse(opts.debug)
             self.assertFalse(opts.force_reboot)
             self.assertTrue(opts.reboot)
             self.assertFalse(opts.spinner)
-            self.assertFalse(opts.uninstall)
             self.assertTrue(opts.update)
 
         # Non-interactive session (automated daemon execution defaults update=False)
@@ -317,6 +306,10 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch('sys.argv', ['freshenmac.py', '-i', 'Slack']):
             opts = yield_arguments()
             self.assertEqual(opts.ignore_mas, ['Slack'])
+
+        with patch('sys.argv', ['freshenmac.py', '--skip-app', 'Telegram']):
+            opts = yield_arguments()
+            self.assertEqual(opts.ignore_mas, ['Telegram'])
 
     def test_yield_arguments_no_update(self):
         """Verifies yield_arguments handles --no-update flag correctly."""
@@ -358,6 +351,15 @@ class TestTopLevelFunctions(unittest.TestCase):
             self.assertTrue(opts.trace)
             self.assertEqual(opts.debug, 9)
             self.assertEqual(opts.debug_limit, -1)
+
+    def test_yield_arguments_version(self):
+        """Verifies yield_arguments parses --version flag and prints version."""
+        with patch('sys.argv', ['freshenmac.py', '--version']), \
+            patch('sys.stdout', new_callable=io.StringIO) as mock_stdout:
+            with self.assertRaises(SystemExit) as cm:
+                yield_arguments()
+            self.assertEqual(cm.exception.code, 0)
+            self.assertIn(f"{APP_INFO['Name']} {APP_INFO['Version']}", mock_stdout.getvalue())
 
 
 if __name__ == '__main__':
