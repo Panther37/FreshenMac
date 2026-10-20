@@ -45,7 +45,7 @@ class TestFixtures(unittest.TestCase):
         sim = SimRunCMD.load(OUTDATED_FORMULA_FIXTURE)
 
         hb = HomeBrew.__new__(HomeBrew)
-        hb.debug = 0
+        hb.debug_vars = {'debug': 0, 'debug_limit': 0}
         outdated = hb._read_outdated(sim.stdout)
 
         # Unpinned outdated packages should be included

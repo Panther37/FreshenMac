@@ -72,8 +72,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
         """
         Verifies that methods within each class across all files are sorted alphabetically.
 
-        Note: __init__ is excluded as the standard constructor, and arm_installed
-        in MacOS is excluded due to property dependency ordering.
+        Note: __init__ is excluded as the standard constructor.
         """
         for filename, class_names in self.FILES_AND_CLASSES.items():
             for class_name in class_names:
@@ -81,12 +80,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                     cls_node = self._get_class_node(filename, class_name)
                     methods = [
                         n.name for n in cls_node.body
-                        if isinstance(n, ast.FunctionDef) and all(
-                            [
-                                n.name != '__init__',
-                                (filename, class_name, n.name) != ('computer.py', 'MacOS', 'arm_installed'),
-                            ],
-                        )
+                        if isinstance(n, ast.FunctionDef) and n.name != '__init__'
                     ]
                     self.assertEqual(
                         methods,

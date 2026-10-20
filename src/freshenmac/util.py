@@ -20,7 +20,7 @@ from typing import Any, IO
 
 from freshenmac import config
 
-FILE_BUILD = 20261013
+FILE_BUILD = 20261016
 PATTERN = {
     'Word': re.compile(r"\w+"),
 }
@@ -70,7 +70,7 @@ class Logger:
             print(f"[util.Logger] Path: {self.target}\n\tLog write failed: {error}")
 
     def _line_append(self, a_line: str) -> None | Exception:
-        """Attempts to append a line to self.target. Returns None on success, or the Exception on failure."""
+        """Attempts to append a line to self.target.  Returns None on success, or the Exception on failure."""
         try:
             with open(self.target, 'a', encoding='utf-8') as f:
                 f.write(a_line + '\n')
@@ -203,7 +203,7 @@ class PrivilegedCMD:
         tmp_pref.write_bytes(data)
         ok = self.run_privileged(
             ['sh', '-c', f"cp '{tmp_pref}' '{target_pref}' && chmod 644 '{target_pref}'"],
-            name_running=f"  - Prefs: {target_pref}",
+            name_running=f"  ▷ Prefs: {target_pref}",
         )
         tmp_pref.unlink(missing_ok=True)
         return ok
@@ -960,10 +960,10 @@ def get_log_file() -> Path:
 def is_app_running(app_name: str, debug_vars: dict = {}) -> bool:
     """Checks if an application is currently running on the system."""
 
-    if RunCMD(['pgrep', '-f', f"{app_name}.app"]):
+    if RunCMD(['pgrep', '-f', f"{app_name}.app"], **debug_vars):
         return True
 
-    if RunCMD(['pgrep', '-x', app_name]):
+    if RunCMD(['pgrep', '-x', app_name], **debug_vars):
         return True
 
     gui_cmd = RunAppleScript(

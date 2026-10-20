@@ -186,8 +186,11 @@ class TestReboot(unittest.TestCase):
         self.reboot.dry_run = False
         self.reboot.computer.user_password = None
 
-        with patch.object(MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True), \
-            patch.object(MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True):
+        with patch.object(
+            MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True,
+        ):
             # Act
             result = self.reboot.attempt_authrestart()
 
@@ -200,9 +203,13 @@ class TestReboot(unittest.TestCase):
         self.reboot.dry_run = False
         self.reboot.computer.user_password = 'secret_password'
 
-        with patch.object(MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True), \
-            patch.object(MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True), \
-            patch('freshenmac.boot.util.RunCMD', return_value=make_cmd(errno=1)):
+        with patch.object(
+            MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True,
+        ), patch(
+            'freshenmac.boot.util.RunCMD', return_value=make_cmd(errno=1),
+        ):
             # Act
             result = self.reboot.attempt_authrestart()
 
@@ -215,9 +222,13 @@ class TestReboot(unittest.TestCase):
         self.reboot.dry_run = False
         self.reboot.computer.user_password = 'secret_password'
 
-        with patch.object(MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True), \
-            patch.object(MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True), \
-            patch('freshenmac.boot.util.RunCMD', return_value=make_cmd(errno=0)):
+        with patch.object(
+            MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            MacOS, 'supports_authrestart', new_callable=PropertyMock, return_value=True,
+        ), patch(
+            'freshenmac.boot.util.RunCMD', return_value=make_cmd(errno=0),
+        ):
             # Act
             result = self.reboot.attempt_authrestart()
 
@@ -237,8 +248,11 @@ class TestReboot(unittest.TestCase):
                 return make_cmd(stdout='Running = 1;' if call_count == 1 else 'Running = 0;')
             return make_cmd(stdout='')
 
-        with patch('freshenmac.boot.util.RunCMD', side_effect=fake_runcmd) as mock_cmd, \
-            patch.object(self.reboot, '_sleep'):
+        with patch(
+            'freshenmac.boot.util.RunCMD', side_effect=fake_runcmd,
+        ) as mock_cmd, patch.object(
+            self.reboot, '_sleep',
+        ):
             # Act
             self.reboot.check_and_stop_backup()
 
@@ -432,8 +446,11 @@ class TestReboot(unittest.TestCase):
     def test_graceful_restart_standard(self):
         """Verifies standard graceful restart auto-saves open documents and prompts System Events."""
         self.reboot.dry_run = False
-        with patch.object(MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=False), \
-            patch('freshenmac.boot.util.RunAppleScript') as mock_ascript:
+        with patch.object(
+            MacOS, 'filevault_enabled', new_callable=PropertyMock, return_value=False,
+        ), patch(
+            'freshenmac.boot.util.RunAppleScript',
+        ) as mock_ascript:
             self.reboot.graceful_restart()
 
             # Two AppleScripts: auto-save documents, then tell System Events to restart
@@ -444,8 +461,11 @@ class TestReboot(unittest.TestCase):
     def test_kill_programs_and_daemons_dry_run(self):
         """Verifies kill_programs_and_daemons performs no actions when dry_run is True."""
         self.reboot.dry_run = True
-        with patch('freshenmac.boot.util.RunAppleScript') as mock_ascript, \
-            patch('freshenmac.boot.util.RunCMD') as mock_cmd:
+        with patch(
+            'freshenmac.boot.util.RunAppleScript',
+        ) as mock_ascript, patch(
+            'freshenmac.boot.util.RunCMD',
+        ) as mock_cmd:
             self.reboot.kill_programs_and_daemons()
             mock_ascript.assert_not_called()
             mock_cmd.assert_not_called()
@@ -453,8 +473,11 @@ class TestReboot(unittest.TestCase):
     def test_kill_programs_and_daemons_no_sudo(self):
         """Verifies kill_programs_and_daemons uses elevated AppleScript when sudo is unavailable."""
         self.reboot.dry_run = False
-        with patch('freshenmac.boot.util.RunAppleScript') as mock_ascript, \
-            patch('freshenmac.boot.util.RunCMD') as mock_cls:
+        with patch(
+            'freshenmac.boot.util.RunAppleScript',
+        ) as mock_ascript, patch(
+            'freshenmac.boot.util.RunCMD',
+        ) as mock_cls:
             mock_cls.can_sudo.return_value = False
             self.reboot.kill_programs_and_daemons()
 
@@ -475,8 +498,11 @@ class TestReboot(unittest.TestCase):
             m.returncode = 0
             return m
 
-        with patch('freshenmac.boot.util.RunAppleScript') as mock_ascript, \
-            patch('freshenmac.boot.util.RunCMD', side_effect=fake_runcmd) as mock_cls:
+        with patch(
+            'freshenmac.boot.util.RunAppleScript',
+        ) as mock_ascript, patch(
+            'freshenmac.boot.util.RunCMD', side_effect=fake_runcmd,
+        ) as mock_cls:
             mock_cls.can_sudo.return_value = True
             self.reboot.kill_programs_and_daemons()
 
@@ -489,8 +515,11 @@ class TestReboot(unittest.TestCase):
     def test_notify_final_warning(self):
         """Verifies notify_final_warning plays Sosumi chime and displays 120-second warning dialog."""
         self.reboot.dry_run = False
-        with patch('freshenmac.boot.util.RunAppleScript.dialog') as mock_dialog, \
-            patch.object(self.reboot, 'play_chime') as mock_chime:
+        with patch(
+            'freshenmac.boot.util.RunAppleScript.dialog',
+        ) as mock_dialog, patch.object(
+            self.reboot, 'play_chime',
+        ) as mock_chime:
             # Act
             self.reboot.notify_final_warning()
 
@@ -527,11 +556,12 @@ class TestReboot(unittest.TestCase):
     def test_prompt_initial_restart_now(self):
         """Verifies prompt_initial returns 'now' when user clicks Restart Now."""
         self.reboot.dry_run = False
-        with patch.object(self.reboot, 'play_chime') as mock_chime, \
-            patch(
-                'freshenmac.boot.util.RunAppleScript.dialog',
-                return_value=make_ascript(stdout='button returned:Restart Now'),
-            ):
+        with patch.object(
+            self.reboot, 'play_chime',
+        ) as mock_chime, patch(
+            'freshenmac.boot.util.RunAppleScript.dialog',
+            return_value=make_ascript(stdout='button returned:Restart Now'),
+        ):
             choice = self.reboot.prompt_initial()
             self.assertEqual(choice, 'now')
             mock_chime.assert_called_once_with('Ping')
@@ -540,11 +570,12 @@ class TestReboot(unittest.TestCase):
         """Verifies prompt_initial returns 'snooze' and decrements snoozes_left on Snooze click."""
         self.reboot.dry_run = False
         self.reboot.snoozes_left = 3
-        with patch.object(self.reboot, 'play_chime') as mock_chime, \
-            patch(
-                'freshenmac.boot.util.RunAppleScript.dialog',
-                return_value=make_ascript(stdout='button returned:Snooze'),
-            ):
+        with patch.object(
+            self.reboot, 'play_chime',
+        ) as mock_chime, patch(
+            'freshenmac.boot.util.RunAppleScript.dialog',
+            return_value=make_ascript(stdout='button returned:Snooze'),
+        ):
             choice = self.reboot.prompt_initial()
             self.assertEqual(choice, 'snooze')
             self.assertEqual(self.reboot.snoozes_left, 2)
@@ -553,8 +584,11 @@ class TestReboot(unittest.TestCase):
     def test_prompt_retry_graceful_and_force(self):
         """Verifies prompt_retry maps dialog button clicks to 'graceful' or 'force'."""
         self.reboot.dry_run = False
-        with patch.object(self.reboot, 'play_chime'), \
-            patch('freshenmac.boot.util.RunAppleScript.dialog') as mock_dialog:
+        with patch.object(
+            self.reboot, 'play_chime',
+        ), patch(
+            'freshenmac.boot.util.RunAppleScript.dialog',
+        ) as mock_dialog:
             # User chooses graceful retry
             mock_dialog.return_value = make_ascript(stdout='button returned:Try Again Gracefully')
             choice = self.reboot.prompt_retry(1)
@@ -585,20 +619,30 @@ class TestReboot(unittest.TestCase):
     def test_start_reboot_now(self):
         """Verifies start_reboot triggers run_now_flow when prompt_initial returns 'now'."""
         why = RebootState(required=['Update pending'])
-        with patch.object(self.reboot, 'prompt_initial', return_value='now'), \
-            patch.object(self.reboot, 'run_now_flow') as mock_now, \
-            patch.object(self.reboot, 'run_snooze_flow') as mock_snooze, \
-            patch.object(self.reboot, 'keep_awake'):
+        with patch.object(
+            self.reboot, 'prompt_initial', return_value='now',
+        ), patch.object(
+            self.reboot, 'run_now_flow',
+        ) as mock_now, patch.object(
+            self.reboot, 'run_snooze_flow',
+        ) as mock_snooze, patch.object(
+            self.reboot, 'keep_awake',
+        ):
             self.reboot.start_reboot(why)
             mock_now.assert_called_once()
             mock_snooze.assert_not_called()
 
     def test_start_reboot_snooze(self):
         """Verifies start_reboot triggers run_snooze_flow when prompt_initial returns 'snooze'."""
-        with patch.object(self.reboot, 'prompt_initial', return_value='snooze'), \
-            patch.object(self.reboot, 'run_now_flow') as mock_now, \
-            patch.object(self.reboot, 'run_snooze_flow') as mock_snooze, \
-            patch.object(self.reboot, 'keep_awake'):
+        with patch.object(
+            self.reboot, 'prompt_initial', return_value='snooze',
+        ), patch.object(
+            self.reboot, 'run_now_flow',
+        ) as mock_now, patch.object(
+            self.reboot, 'run_snooze_flow',
+        ) as mock_snooze, patch.object(
+            self.reboot, 'keep_awake',
+        ):
             self.reboot.start_reboot()
             mock_snooze.assert_called_once()
             mock_now.assert_not_called()
@@ -621,8 +665,11 @@ class TestReboot(unittest.TestCase):
         # Case 2: Non-root fallback -> invokes elevated AppleScript
         executed_cmds.clear()
         with patch.object(self.reboot, 'ensure_root', return_value=False):
-            with patch('freshenmac.boot.util.RunCMD', side_effect=fake_runcmd), \
-                patch('freshenmac.boot.util.RunAppleScript') as mock_ascript:
+            with patch(
+                'freshenmac.boot.util.RunCMD', side_effect=fake_runcmd,
+            ), patch(
+                'freshenmac.boot.util.RunAppleScript',
+            ) as mock_ascript:
                 self.reboot.turn_off()
                 cmd_match = any('shutdown -h now' in str(c) for c in executed_cmds)
                 ascript_match = all(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import io
+import json
 import os
 import sys
 from time import sleep
@@ -16,21 +17,21 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261016
+FILE_BUILD = 20261018
 
 
 def actions(some_options: argparse.Namespace, logger: Any | None = None) -> bool:
     if some_options.action == 'Uninstall':
-        return plist.LaunchAgent(debug=some_options.debug, debug_limit=some_options.debug_limit).uninstall()
+        return plist.LaunchAgent(debug_vars=some_options.debug_vars).uninstall()
     if some_options.action == 'Install':
         return all(
             [
-                plist.LaunchAgent(debug=some_options.debug, debug_limit=some_options.debug_limit).check_and_install(),
-                plist.PackageSync(debug=some_options.debug, debug_limit=some_options.debug_limit).update_files(),
+                plist.LaunchAgent(debug_vars=some_options.debug_vars).check_and_install(),
+                plist.PackageSync(debug_vars=some_options.debug_vars).update_files(),
             ],
         )
     if some_options.action == 'Update':
-        return plist.PackageSync(debug=some_options.debug, debug_limit=some_options.debug_limit).update_files()
+        return plist.PackageSync(debug_vars=some_options.debug_vars).update_files()
 
     logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
     logger.print_store(
@@ -51,7 +52,7 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
         vars(options).update(overrides)
     else:
         options = yield_arguments()
-        if options.debug > 1:
+        if options.debug_vars['debug'] > 1:
             print(f"Arguments: {sys.argv}")
             print(f"Options: {vars(options)}")
 
@@ -61,20 +62,13 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
     if options.action:
         return actions(options, logger)
 
-    if options.schedule is None:
-        options.schedule = 'Help'
-    elif 'default' in options.schedule.lower():
-        options.schedule = DEFAULTS['schedule']
+    if options.schedule:
+        if 'default' in options.schedule.lower():
+            options.schedule = DEFAULTS['schedule']
+        return plist.SavePreferences({'schedule': options.schedule}, debug_vars=options.debug_vars).save()
 
-    if schedule := options.schedule:
-        return plist.SavePreferences(
-            {'schedule': schedule},
-            debug=options.debug,
-            debug_limit=options.debug_limit,
-        ).save()
-
-    if (save_prefs := options.save_prefs) is not None:
-        return plist.SavePreferences(save_prefs, debug=options.debug, debug_limit=options.debug_limit).save()
+    if options.save_prefs is not None:
+        return plist.SavePreferences(options.save_prefs, debug_vars=options.debug_vars).save()
 
     if options.spinner:
         return spinner_test()
@@ -100,7 +94,7 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
                 user_password = None
 
     with util.SudoKeepAlive():
-        if options.debug > 1:
+        if options.debug_vars['debug'] > 1:
             print(f"Console user: {console_user}")
             return perform_updates(options, console_user, user_password)
 
@@ -118,28 +112,27 @@ def perform_updates(
     user_password: str | None = None,
     logger: Any | None = None,
 ) -> bool:
-    debug_vars = {'debug': some_options.debug, 'debug_limit': some_options.debug_limit}
     logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
     logger.store(
         f"{APP_INFO['Name']} {APP_INFO['Version']} started by {console_user} (options: {vars(some_options)})",
         component='Main',
     )
 
-    if not plist.cleanup_startup_run(logger=logger):
+    if not plist.StartupRun(debug_vars=some_options.debug_vars, logger=logger).agent.remove_script():
         logger.print_store("Failed to clean up previous startup run.  Continuing anyway...", component='Main')
 
     if some_options.update:
-        plist.update_installed_script(**debug_vars)
+        plist.PackageSync(debug_vars=some_options.debug_vars).update_files()
     # Check if ran with no flags
     if len(sys.argv) == 1:
-        plist.check_plist()
+        plist.check_plist(debug_vars=some_options.debug_vars)
     mac = computer.MacOS(
         console_user=console_user,
+        debug_vars=some_options.debug_vars,
         force_reboot=some_options.force_reboot,
         ignore_mas=some_options.ignore_mas,
         logger=logger,
         user_password=user_password,
-        **debug_vars,
     )
     mac.update('all')
     if some_options.reboot:
@@ -210,7 +203,7 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         'These options change your persistent preferences',
     )
     pref_group.add_argument(
-        '-s', '--save-prefs', nargs='?', const='', default=None,
+        '-s', '--save-prefs', const='help', default=None, nargs='?',
         metavar='PREF',
         help=(
             'Save a preference, e.g. `schedule=0 6 * * 1` or `no-mas=iPhoto 408981381`.  '
@@ -218,7 +211,7 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     pref_group.add_argument(
-        '--schedule', '--cron', dest='schedule', nargs='?', type=str, default='',
+        '--schedule', '--cron', const='help', default=None, dest='schedule', nargs='?',
         metavar='CRON',
         help='Set or update the LaunchAgent schedule using cron syntax (e.g. "0 6 * * 1" or "0 6 1,15 * *")',
     )
@@ -267,15 +260,19 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
     return yield_rules(parser.parse_args(some_args))
 
 
-def yield_rules(args: argparse.Namespace) -> argparse.Namespace:
-    if getattr(args, 'trace', False):
-        args.debug = 9
-        args.debug_limit = -1
-    elif getattr(args, 'debug_limit', False) and not args.debug:
-        args.debug = 2
-    if getattr(args, 'update', None) is None:
-        args.update = util.is_interactive()
-    return args
+def yield_rules(flags: argparse.Namespace) -> argparse.Namespace:
+    # Update
+    if getattr(flags, 'update', None) is None:
+        flags.update = util.is_interactive()
+    # Debug, Trace, Verbose
+    if flags.trace:
+        flags.debug_vars = {'debug': 9, 'debug_limit': -1}
+        print(json.dumps(vars(flags), indent=2))
+    else:
+        if flags.debug_limit and not flags.debug:
+            flags.debug = 2
+        flags.debug_vars = {'debug': vars(flags).pop('debug'), 'debug_limit': vars(flags).pop('debug_limit')}
+    return flags
 
 
 if __name__ == '__main__':

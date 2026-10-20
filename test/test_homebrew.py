@@ -22,9 +22,11 @@ class TestHomeBrew(unittest.TestCase):
         """Verifies Homebrew binary path discovery for Apple Silicon and Intel."""
         # Case 1: Apple Silicon prefers /opt/homebrew/bin/brew
         brew_arm = HomeBrew(is_arm=True)
-        with patch('freshenmac.homebrew.Path.exists', return_value=True), \
-            patch('freshenmac.homebrew.shutil.which', return_value='/opt/homebrew/bin/brew'):
-
+        with patch(
+            'freshenmac.homebrew.Path.exists', return_value=True,
+        ), patch(
+            'freshenmac.homebrew.shutil.which', return_value='/opt/homebrew/bin/brew',
+        ):
             self.assertEqual(brew_arm.brew_path, Path('/opt/homebrew/bin/brew'))
 
         # Case 2: Intel prefers /usr/local/bin/brew
@@ -35,7 +37,7 @@ class TestHomeBrew(unittest.TestCase):
     def test_cmd_options(self):
         """Verifies cmd_options compiles execution dictionary with custom timeout and debug settings."""
         # Arrange
-        brew = HomeBrew(is_arm=True, timeout=1200, debug=True)
+        brew = HomeBrew(is_arm=True, timeout=1200, debug_vars={'debug': 1, 'debug_limit': 0})
 
         # Act
         opts = brew.cmd_options()
@@ -43,7 +45,7 @@ class TestHomeBrew(unittest.TestCase):
         # Assert
         self.assertEqual(
             opts,
-            {'cancelable': True, 'debug': True, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
+            {'cancelable': True, 'debug': 1, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
         )
 
     def test_get_and_upgrade_casks(self):
@@ -74,8 +76,11 @@ class TestHomeBrew(unittest.TestCase):
             mock.__bool__.return_value = True
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')):
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+        ):
 
             # Act: fetch outdated casks
             casks = brew._get_outdated_casks()
@@ -257,8 +262,11 @@ class TestHomeBrew(unittest.TestCase):
                 mock.__bool__.return_value = True
                 return mock
 
-            with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-                patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')):
+            with patch(
+                'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+            ), patch.object(
+                HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+            ):
                 # Act
                 res = brew._recover_rebase()
 
@@ -304,8 +312,11 @@ class TestHomeBrew(unittest.TestCase):
 
         outdated_dict = {'pkg_installed_outdated': '1.0 ═▷ 2.0'}
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')):
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+        ):
 
             # Act
             brew._resolve_and_update_dependencies('test_formula', outdated_dict)
@@ -317,8 +328,9 @@ class TestHomeBrew(unittest.TestCase):
             # Current package untouched
             self.assertFalse(
                 any(
-                    all(['pkg_installed_current' in c, any(a in c for a in ('install', 'upgrade'))])
-                    for c in executed_cmds
+                    all(
+                        ['pkg_installed_current' in c, any(a in c for a in ('install', 'upgrade'))],
+                    ) for c in executed_cmds,
                 ),
             )
 
@@ -424,8 +436,11 @@ class TestHomeBrew(unittest.TestCase):
         mock_cmd.returncode = 1
         mock_cmd.stderr = "Cask installation failed"
 
-        with patch('freshenmac.homebrew.RunCMD', return_value=mock_cmd), \
-            patch.object(brew, '_warning') as mock_warning:
+        with patch(
+            'freshenmac.homebrew.RunCMD', return_value=mock_cmd,
+        ), patch.object(
+            brew, '_warning',
+        ) as mock_warning:
             brew._upgrade_casks({'google-chrome': '120.0 ═▷ 121.0'})
             mock_warning.assert_called_once_with(
                 'upgrade --cask',
@@ -460,9 +475,13 @@ class TestHomeBrew(unittest.TestCase):
             mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(brew.xcode, 'check_and_fix_license', return_value=False), \
-            patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')):
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            brew.xcode, 'check_and_fix_license', return_value=False,
+        ), patch.object(
+            HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+        ):
 
             # _resolve_and_update_dependencies returns False
             res = brew._resolve_and_update_dependencies('parent_formula')
@@ -542,8 +561,11 @@ class TestHomeBrew(unittest.TestCase):
             mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(brew.xcode, 'check_and_fix_license', return_value=True) as mock_check:
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            brew.xcode, 'check_and_fix_license', return_value=True,
+        ) as mock_check:
 
             # Act
             brew.update()
@@ -586,8 +608,11 @@ class TestHomeBrew(unittest.TestCase):
             mock.std_all = mock.stdout
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(brew.xcode, 'check_and_fix_license', return_value=True):
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            brew.xcode, 'check_and_fix_license', return_value=True,
+        ):
 
             # Act
             brew.update()
@@ -636,9 +661,13 @@ class TestHomeBrew(unittest.TestCase):
             mock.__bool__.return_value = True
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(brew, '_recover_rebase', return_value=True) as mock_recover, \
-            patch.object(brew, '_get_outdated_formulae', return_value={}):
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            brew, '_recover_rebase', return_value=True,
+        ) as mock_recover, patch.object(
+            brew, '_get_outdated_formulae', return_value={},
+        ):
 
             # Act
             brew.update()
@@ -664,9 +693,11 @@ class TestHomeBrew(unittest.TestCase):
             mock.std_all = '==> Upgrading cmake_pkg'
             return mock
 
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd), \
-            patch.object(brew.xcode, 'check_and_fix_license', return_value=True):
-
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            brew.xcode, 'check_and_fix_license', return_value=True,
+        ):
             # Act
             brew._upgrade_cmake_formulae(['cmake_pkg'], {'cmake_pkg': '1.0 -> 1.1'})
 
@@ -679,8 +710,11 @@ class TestHomeBrew(unittest.TestCase):
         # Arrange
         brew = HomeBrew(is_arm=True, dry_run=False)
 
-        with patch.object(HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew')), \
-            patch('freshenmac.homebrew.RunCMD', side_effect=KeyboardInterrupt):
+        with patch.object(
+            HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+        ), patch(
+            'freshenmac.homebrew.RunCMD', side_effect=KeyboardInterrupt,
+        ):
 
             # Act & Assert: catches KeyboardInterrupt without unhandled crash
             try:
@@ -696,7 +730,7 @@ class TestHomeBrew(unittest.TestCase):
 
         # Assert
         self.assertIsInstance(brew.xcode, Xcode)
-        self.assertEqual(brew.xcode.debug, brew.debug)
+        self.assertEqual(brew.xcode.debug_vars, brew.debug_vars)
         self.assertEqual(brew.xcode.dry_run, brew.dry_run)
 
 

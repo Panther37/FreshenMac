@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 
 from freshenmac.config import PATHS
 from freshenmac.util import (
-    RETURNCODE,
     Logger,
     PlaySound,
+    RETURNCODE,
     RunAppleScript,
     RunCMD,
     Runner,
@@ -48,13 +48,11 @@ class TestLogging(unittest.TestCase):
     def test_get_log_file_system_and_user_fallbacks(self):
         """Verifies get_log_file checks write permissions to system log before falling back to user log."""
         # System log directory writable -> returns system log path
-        with patch('pathlib.Path.exists', return_value=False), \
-            patch('os.access', return_value=True):
+        with patch('pathlib.Path.exists', return_value=False), patch('os.access', return_value=True):
             self.assertEqual(get_log_file(), PATHS['Log']['System'])
 
         # System log directory not writable -> falls back to user log path
-        with patch('pathlib.Path.exists', return_value=False), \
-            patch('os.access', return_value=False):
+        with patch('pathlib.Path.exists', return_value=False), patch('os.access', return_value=False):
             self.assertEqual(get_log_file(), PATHS['Log']['User'])
 
     def test_line_append_returns_exception(self):
@@ -175,9 +173,13 @@ class TestLogging(unittest.TestCase):
                     return PermissionError("Permission denied")
                 return None
 
-            with patch.object(RunCMD, 'can_sudo', return_value=True), \
-                patch('freshenmac.util.RunCMD') as mock_run_cmd, \
-                patch.object(logger, '_line_append', side_effect=fake_append):
+            with patch.object(
+                RunCMD, 'can_sudo', return_value=True,
+            ), patch(
+                'freshenmac.util.RunCMD',
+            ) as mock_run_cmd, patch.object(
+                logger, '_line_append', side_effect=fake_append,
+            ):
                 # Act
                 logger._write_line("Privileged line")
 
@@ -197,9 +199,13 @@ class TestLogging(unittest.TestCase):
             logger = Logger(log_file=sys_log)
             mock_cmd = MagicMock(returncode=0)
 
-            with patch.object(RunCMD, 'can_sudo', return_value=True), \
-                patch('freshenmac.util.RunCMD', return_value=mock_cmd) as mock_run_cmd, \
-                patch.object(logger, '_line_append', return_value=PermissionError("Permission denied")):
+            with patch.object(
+                RunCMD, 'can_sudo', return_value=True,
+            ), patch(
+                'freshenmac.util.RunCMD', return_value=mock_cmd,
+            ) as mock_run_cmd, patch.object(
+                logger, '_line_append', return_value=PermissionError("Permission denied"),
+            ):
                 # Act
                 logger._write_line("Tee line")
 
@@ -225,9 +231,13 @@ class TestLogging(unittest.TestCase):
                     return PermissionError("Permission denied")
                 return None
 
-            with patch.object(RunCMD, 'can_sudo', return_value=False), \
-                patch.dict(PATHS['Log'], {'User': user_log}), \
-                patch.object(logger, '_line_append', side_effect=fake_append):
+            with patch.object(
+                RunCMD, 'can_sudo', return_value=False,
+            ), patch.dict(
+                PATHS['Log'], {'User': user_log},
+            ), patch.object(
+                logger, '_line_append', side_effect=fake_append,
+            ):
                 # Act
                 logger._write_line("Emergency message")
 
@@ -240,9 +250,13 @@ class TestLogging(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             test_log = Path(tmp_dir) / 'test.log'
             logger = Logger(log_file=test_log)
-            with patch.object(RunCMD, 'can_sudo', return_value=False), \
-                patch.object(logger, '_line_append', return_value=PermissionError("Permission denied")), \
-                patch.object(logger, '_disable_logger') as mock_disable:
+            with patch.object(
+                RunCMD, 'can_sudo', return_value=False,
+            ), patch.object(
+                logger, '_line_append', return_value=PermissionError("Permission denied"),
+            ), patch.object(
+                logger, '_disable_logger',
+            ) as mock_disable:
                 # Act
                 logger._write_line("Failing all stages")
 
@@ -289,13 +303,11 @@ class TestPlaySound(unittest.TestCase):
         ps = PlaySound.__new__(PlaySound)
         ps.sound = '/nonexistent/sound.aiff'
         ps.sound_list = []
-        with patch('os.path.isfile', return_value=False), \
-            patch('freshenmac.util.RunCMD') as mock_cmd:
+        with patch('os.path.isfile', return_value=False), patch('freshenmac.util.RunCMD') as mock_cmd:
             mock_cmd.return_value.__bool__.return_value = False
             self.assertEqual(ps._normalize_file(), PlaySound.DEFAULT_SOUND)
 
-        with patch('os.path.isfile', return_value=True), \
-            patch('freshenmac.util.RunCMD') as mock_cmd:
+        with patch('os.path.isfile', return_value=True), patch('freshenmac.util.RunCMD') as mock_cmd:
             mock_cmd.return_value.__bool__.return_value = True
             ps.sound = '/custom/sound.aiff'
             self.assertEqual(ps._normalize_file(), '/custom/sound.aiff')
@@ -506,7 +518,7 @@ class TestRunCMD(unittest.TestCase):
         with patch('os.geteuid', return_value=501):
             with patch('subprocess.run') as mock_sub:
                 mock_sub.return_value = subprocess.CompletedProcess(
-                    args=['sudo', '-n', 'true'], returncode=0, stdout='', stderr=''
+                    args=['sudo', '-n', 'true'], returncode=0, stdout='', stderr='',
                 )
                 self.assertTrue(RunCMD.can_sudo())
                 mock_sub.assert_called_once()
@@ -515,7 +527,7 @@ class TestRunCMD(unittest.TestCase):
 
             with patch('subprocess.run') as mock_sub:
                 mock_sub.return_value = subprocess.CompletedProcess(
-                    args=['sudo', '-n', 'true'], returncode=1, stdout='', stderr='password required'
+                    args=['sudo', '-n', 'true'], returncode=1, stdout='', stderr='password required',
                 )
                 self.assertFalse(RunCMD.can_sudo())
                 mock_sub.assert_called_once()
@@ -722,8 +734,7 @@ class TestRunner(unittest.TestCase):
 
     def test_context_manager(self):
         """Verifies Runner context manager starts background thread on enter and stops on exit."""
-        with patch.object(Runner, 'start') as mock_start, \
-            patch.object(Runner, 'stop') as mock_stop:
+        with patch.object(Runner, 'start',) as mock_start, patch.object(Runner, 'stop',) as mock_stop:
             with Runner(target=lambda: None) as runner:
                 self.assertIsInstance(runner, Runner)
                 mock_start.assert_called_once()
@@ -824,8 +835,7 @@ class TestSudoKeepAlive(unittest.TestCase):
 
     def test_context_manager(self):
         """Verifies SudoKeepAlive starts background thread on enter and terminates on exit."""
-        with patch.object(SudoKeepAlive, 'start') as mock_start, \
-            patch.object(SudoKeepAlive, 'stop') as mock_stop:
+        with patch.object(SudoKeepAlive, 'start',) as mock_start, patch.object(SudoKeepAlive, 'stop',) as mock_stop:
             with SudoKeepAlive(interval=10) as keepalive:
                 self.assertIsInstance(keepalive, SudoKeepAlive)
                 mock_start.assert_called_once()
@@ -835,8 +845,11 @@ class TestSudoKeepAlive(unittest.TestCase):
     def test_keepalive_refreshes_sudo(self):
         """Verifies _keepalive executes sudo -n -v when can_sudo is True."""
         keepalive = SudoKeepAlive(interval=1)
-        with patch.object(keepalive._stop_event, 'wait', side_effect=[False, True]), \
-            patch('freshenmac.util.RunCMD') as mock_cmd:
+        with patch.object(
+            keepalive._stop_event, 'wait', side_effect=[False, True],
+        ), patch(
+            'freshenmac.util.RunCMD',
+        ) as mock_cmd:
             mock_cmd.can_sudo.return_value = True
             keepalive._keepalive()
             mock_cmd.assert_called_once_with(['sudo', '-n', '-v'])
@@ -844,8 +857,11 @@ class TestSudoKeepAlive(unittest.TestCase):
     def test_keepalive_skips_refresh_when_cannot_sudo(self):
         """Verifies _keepalive skips command execution when can_sudo is False."""
         keepalive = SudoKeepAlive(interval=1)
-        with patch.object(keepalive._stop_event, 'wait', side_effect=[False, True]), \
-            patch('freshenmac.util.RunCMD') as mock_cmd:
+        with patch.object(
+            keepalive._stop_event, 'wait', side_effect=[False, True],
+        ), patch(
+            'freshenmac.util.RunCMD',
+        ) as mock_cmd:
             mock_cmd.can_sudo.return_value = False
             keepalive._keepalive()
             mock_cmd.assert_not_called()

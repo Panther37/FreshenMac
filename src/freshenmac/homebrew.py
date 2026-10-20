@@ -13,7 +13,7 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261012
+FILE_BUILD = 20261017
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(
@@ -47,8 +47,7 @@ class HomeBrew:
         self,
         is_arm: bool,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         reboot: RebootState | None = None,
@@ -58,9 +57,7 @@ class HomeBrew:
         self.attempted_installs: set[str] = set()
         self.attempted_updates: set[str] = set()
         self.summary_results: dict[str, dict[str, str]] = {'updated': {}, 'unchanged': {}, 'installed': {}}
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.is_arm = bool(is_arm)
         self.logger = logger or Logger(dry_run=self.dry_run)
@@ -68,7 +65,7 @@ class HomeBrew:
         self.timeout = timeout
         self.upgrade_timeout = upgrade_timeout
         self.updates_performed = False
-        self.xcode = Xcode(dry_run=self.dry_run, **self.debug_vars)
+        self.xcode = Xcode(debug_vars=self.debug_vars, dry_run=dry_run)
         self._configure_environment()
 
     @staticmethod
@@ -106,13 +103,13 @@ class HomeBrew:
                         if name and name not in cmake_list:
                             cmake_list.append(name)
             except Exception as err:
-                if self.debug > 0:
+                if self.debug_vars['debug'] > 0:
                     self.logger.print(f"[Warning] Failed to parse brew info JSON: {err}")
 
         if 'cmake' in cmake_list:
             cmake_list.remove('cmake')
             cmake_list.insert(0, 'cmake')
-        if self.debug > 1:
+        if self.debug_vars['debug'] > 1:
             self.logger.print(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
         return cmake_list
 
@@ -126,7 +123,7 @@ class HomeBrew:
             return self._read_outdated_casks(cmd.stdout)
 
         except Exception as err:
-            if self.debug > 0:
+            if self.debug_vars['debug'] > 0:
                 self.logger.print(f"[Warning] Failed to parse brew outdated casks JSON: {err}")
             return {}
 
@@ -140,14 +137,14 @@ class HomeBrew:
             return self._read_outdated(cmd.stdout)
 
         except Exception as err:
-            if self.debug > 0:
+            if self.debug_vars['debug'] > 0:
                 self.logger.print(f"[Warning] Failed to parse brew outdated JSON: {err}")
             return {}
 
     def _read_outdated(self, json_str: str) -> dict[str, str]:
         data = json.loads(json_str)
-        if self.debug > 2:
-            if self.debug == 1:
+        if self.debug_vars['debug'] > 0:
+            if self.debug_vars['debug'] == 1:
                 self.logger.print(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
             else:
                 self.logger.print(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
@@ -164,7 +161,7 @@ class HomeBrew:
                 latest_installed = max(parse_version(v) for v in installed_list)
                 current_ver = parse_version(current)
                 if latest_installed >= current_ver:
-                    if self.debug > 0:
+                    if self.debug_vars['debug'] > 0:
                         self.logger.print(
                             f"[Skipping] '{name}' installed ({installed}) "
                             f"is already at or above current version ({current}).",
@@ -224,7 +221,7 @@ class HomeBrew:
             apply_dir = repo / '.git' / 'rebase-apply'
             if lock_dir.exists() or apply_dir.exists():
                 is_dirty = True
-                self.log(f"[Self-Healing] Found stranded rebase lock in {repo}. Aborting rebase...")
+                self.log(f"[Self-Healing] Found stranded rebase lock in {repo}.  Aborting rebase...")
                 RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
                 shutil.rmtree(lock_dir, ignore_errors=True)
                 shutil.rmtree(apply_dir, ignore_errors=True)
@@ -527,10 +524,9 @@ class HomeBrew:
         """Common options dictionary for long-running system/app updates under utility QoS."""
         options = {
             'cancelable':  True,
-            'debug':       self.debug,
-            'debug_limit': self.debug_limit,
             'taskpolicy':  'utility',
             'timeout':     self.timeout,
+            **self.debug_vars,
         }
         if update_options:
             options.update(update_options)
@@ -580,7 +576,7 @@ class HomeBrew:
         update_cmd = RunCMD(u_cmd, **self.cmd_options())
         if (update_cmd.std_all and PATTERN['Rebase'].search(update_cmd.std_all)) or not update_cmd:
             self.log(
-                "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap. Self-healing...",
+                "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap.  Self-healing...",
             )
             if self._recover_rebase():
                 self.log("Retrying Homebrew update after clearing stranded rebase...")

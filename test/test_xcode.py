@@ -107,20 +107,24 @@ class TestXcode(unittest.TestCase):
     def test_init_defaults(self):
         """Verifies default values and custom parameter assignment upon initialization."""
         xc = Xcode()
-        self.assertFalse(xc.debug)
+        self.assertEqual(xc.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(xc.dry_run)
 
-        xc_custom = Xcode(debug=True, dry_run=True)
-        self.assertTrue(xc_custom.debug)
+        xc_custom = Xcode(debug_vars={'debug': 1, 'debug_limit': 0}, dry_run=True)
+        self.assertEqual(xc_custom.debug_vars, {'debug': 1, 'debug_limit': 0})
         self.assertTrue(xc_custom.dry_run)
 
     def test_install_clt_headless_install_failure(self):
         """Verifies headless installation cleans up sentinel file when softwareupdate -i fails."""
         xc = Xcode()
         sw_output = "* Label: Command Line Tools for Xcode-16.2\n"
-        with patch('freshenmac.xcode.Path.touch'), \
-            patch('freshenmac.xcode.Path.is_file', return_value=True), \
-            patch('freshenmac.xcode.Path.unlink'):
+        with patch(
+            'freshenmac.xcode.Path.touch'
+        ), patch(
+            'freshenmac.xcode.Path.is_file', return_value=True
+        ), patch(
+            'freshenmac.xcode.Path.unlink'
+        ):
             with patch('freshenmac.xcode.RunCMD') as mock_cmd:
                 mock_cmd.side_effect = [
                     make_cmd(stdout=sw_output),  # .      softwareupdate -l
@@ -131,9 +135,13 @@ class TestXcode(unittest.TestCase):
     def test_install_clt_headless_no_package(self):
         """Verifies headless installation aborts cleanly if softwareupdate list has no CLT package."""
         xc = Xcode()
-        with patch('freshenmac.xcode.Path.touch'), \
-            patch('freshenmac.xcode.Path.is_file', return_value=True), \
-            patch('freshenmac.xcode.Path.unlink'):
+        with patch(
+            'freshenmac.xcode.Path.touch'
+        ), patch(
+            'freshenmac.xcode.Path.is_file', return_value=True
+        ), patch(
+            'freshenmac.xcode.Path.unlink'
+        ):
             with patch('freshenmac.xcode.RunCMD', return_value=make_cmd(stdout='No updates found')):
                 self.assertFalse(xc.install_clt_headless())
 
@@ -145,10 +153,15 @@ class TestXcode(unittest.TestCase):
             "* Label: Command Line Tools for Xcode-16.2\n"
             "  Title: Command Line Tools for Xcode, Version: 16.2\n"
         )
-        with patch('freshenmac.xcode.Path.touch'), \
-            patch('freshenmac.xcode.Path.is_file', return_value=True), \
-            patch('freshenmac.xcode.Path.unlink'), \
-            patch('freshenmac.xcode.Path.is_dir', return_value=True):
+        with patch(
+            'freshenmac.xcode.Path.touch'
+        ), patch(
+            'freshenmac.xcode.Path.is_file', return_value=True
+        ), patch(
+            'freshenmac.xcode.Path.unlink'
+        ), patch(
+            'freshenmac.xcode.Path.is_dir', return_value=True
+        ):
             with patch('freshenmac.xcode.RunCMD') as mock_cmd:
                 mock_cmd.side_effect = [
                     make_cmd(stdout=sw_output),  # 1. softwareupdate -l
