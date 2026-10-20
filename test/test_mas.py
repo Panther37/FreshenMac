@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock, patch
 
 from freshenmac.boot import RebootState
 from freshenmac.mas import AppStore
@@ -86,18 +86,26 @@ class TestAppStore(unittest.TestCase):
     def test_update_all_up_to_date(self):
         """Verifies empty outdated list logs 'All App Store apps are up to date'."""
         app_store = AppStore(dry_run=False)
-        with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
-            patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.util.RunCMD', return_value=make_cmd(stdout='')):
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas'),
+        ), patch(
+            'freshenmac.mas.util.RunCMD', return_value=make_cmd(stdout=''),
+        ):
             with patch.object(app_store.log, 'print_store') as mock_log:
                 app_store.update()
                 mock_log.assert_any_call("All App Store apps are up to date.", 'App Store')
 
     def test_update_dry_run(self):
         """Verifies update in dry-run mode logs intent without executing upgrade commands."""
-        with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
-            patch.object(self.app_store.log, 'print_store') as mock_log, \
-            patch('freshenmac.mas.util.RunCMD') as mock_cmd:
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            self.app_store.log, 'print_store',
+        ) as mock_log, patch(
+            'freshenmac.mas.util.RunCMD',
+        ) as mock_cmd:
             self.app_store.update()
             mock_log.assert_any_call("[Dry-run] Would check and update App Store apps.", 'App Store')
             mock_cmd.assert_not_called()
@@ -119,14 +127,20 @@ class TestAppStore(unittest.TestCase):
             if 'outdated' in cmd:
                 return make_cmd(stdout=outdated_out)
             if 'upgrade' in cmd:
+                self.assertEqual(kwargs.get('taskpolicy'), 'utility')
                 upgraded_ids.append(cmd[2])
                 return make_cmd(stdout="Upgraded 634148309 Logic Pro")
             return make_cmd(errno=0)
 
-        with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
-            patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.util.is_app_running', return_value=False), \
-            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd):
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas'),
+        ), patch(
+            'freshenmac.mas.util.is_app_running', return_value=False,
+        ), patch(
+            'freshenmac.mas.util.RunCMD', side_effect=fake_runcmd,
+        ):
             app_store.update()
 
             # Verify ignored app was skipped, non-ignored was upgraded
@@ -149,11 +163,17 @@ class TestAppStore(unittest.TestCase):
                 return make_cmd(stdout=outdated_out)
             return make_cmd(errno=0)
 
-        with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
-            patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd) as mock_cmd, \
-            patch('freshenmac.mas.util.is_app_running', return_value=True), \
-            patch('freshenmac.plist.StartupRun.schedule', return_value=True) as mock_schedule:
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas'),
+        ), patch(
+            'freshenmac.mas.util.RunCMD', side_effect=fake_runcmd,
+        ) as mock_cmd, patch(
+            'freshenmac.mas.util.is_app_running', return_value=True,
+        ), patch(
+            'freshenmac.plist.StartupRun.schedule', return_value=True,
+        ) as mock_schedule:
             app_store.update()
 
             # Must NOT mark reboot required, must record in defer.running, and schedule one-shot startup agent
@@ -177,11 +197,17 @@ class TestAppStore(unittest.TestCase):
                 return make_cmd(stdout="Upgraded Xcode")
             return make_cmd(errno=0)
 
-        with patch.object(AppStore, 'has_mas', new_callable=PropertyMock, return_value=True), \
-            patch.object(AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas')), \
-            patch('freshenmac.mas.util.is_app_running', return_value=False), \
-            patch('freshenmac.mas.util.RunCMD', side_effect=fake_runcmd), \
-            patch('freshenmac.mas.Xcode') as mock_xcode_cls:
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas'),
+        ), patch(
+            'freshenmac.mas.util.is_app_running', return_value=False,
+        ), patch(
+            'freshenmac.mas.util.RunCMD', side_effect=fake_runcmd,
+        ), patch(
+            'freshenmac.mas.Xcode',
+        ) as mock_xcode_cls:
             app_store.update()
             mock_xcode_cls.return_value.check_and_fix_license.assert_called_once()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import plistlib
 import re
 import sys
@@ -12,7 +13,7 @@ from typing import Any
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261014
+FILE_BUILD = 20261019
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
@@ -29,8 +30,7 @@ class LaunchAgent(PrivilegedCMD):
         self,
         label: str = config.DEFAULTS['plist'],
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         hour: int | None = None,
         launch_agents_dir: Path = Path('/Library/LaunchAgents'),
@@ -46,9 +46,7 @@ class LaunchAgent(PrivilegedCMD):
         default_schedule = config.DEFAULTS.get('schedule', {})
         self._target_plist: Path | None = None
         self.cron_schedule = schedule_dict
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.hour = default_schedule.get('Hour', 2) if hour is None else hour
         self.label = label
@@ -58,10 +56,10 @@ class LaunchAgent(PrivilegedCMD):
         self.logger = self.log
         self.minute = default_schedule.get('Minute', 0) if minute is None else minute
         self.package_sync = package_sync or PackageSync(
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             logger=self.log,
             target_script=target_script,
-            **self.debug_vars,
         )
         self.run_at_load = run_at_load
         self.sudoers = f"/etc/sudoers.d/{config.APP_INFO['Name'].lower()}"
@@ -205,13 +203,19 @@ class LaunchAgent(PrivilegedCMD):
         if schedule_cron:
             try:
                 self.cron_schedule = parse_cron(schedule_cron)
-            except ValueError as err:
-                self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
-                self._parse_error = True
-                return None
-
-            except Exception:
-                pass
+            except ValueError as err_val:
+                self.log.print_store(f"[Error] Invalid schedule: {err_val}", component='Preferences')
+            except Exception as err_other:
+                self.log.print_store(
+                    f"[Error] Parsing schedule ({type(schedule_cron)}): {schedule_cron}\n : {err_other}",
+                    component='Preferences',
+                )
+        if (
+            not self.cron_schedule
+            or
+            not check_data_format(self.cron_schedule, ['Minute', 'Hour', 'Day', 'Month', 'Weekday'], [dict, list])
+        ):
+            return b'[Error] Invalid cron'
 
         session_types = ['Aqua', 'Standard']
         if not self.run_at_load:
@@ -219,11 +223,11 @@ class LaunchAgent(PrivilegedCMD):
         plist_dict: dict[str, Any] = {
             'EnvironmentVariables':   {
                 'PATH':       '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-                'PYTHONPATH': str(self.target_dir.parent),
+                'PYTHONPATH': str(self.package_sync.target_dir.parent),
             },
             'Label':                  self.label,
             'LimitLoadToSessionType': session_types,
-            'ProgramArguments':       [self.python_bin, str(self.target_script)],
+            'ProgramArguments':       [self.python_bin, str(self.package_sync.target_script)],
             'StandardErrorPath':      f"{self.log_dir}/{self.label}.stderr.log",
             'StandardOutPath':        f"{self.log_dir}/{self.label}.stdout.log",
         }
@@ -275,6 +279,9 @@ class LaunchAgent(PrivilegedCMD):
                 return False
 
         plist_data = self.build_plist_data()
+        if plist_data.startswith(b'[Error]'):
+            return False
+
         if self.dry_run:
             self.log.print_store(
                 f"[Dry-run] Would install {self.target_plist.name} in {self.launch_agents_dir}",
@@ -302,10 +309,9 @@ class LaunchAgent(PrivilegedCMD):
         """Checks if the service is currently registered with launchd."""
         gui_target = f"{self.domain}/{self.label}"
         return bool(
-            RunCMD(['launchctl', 'print', gui_target], **self.debug_vars) or RunCMD(
-                ['launchctl', 'list', self.label],
-                **self.debug_vars,
-            ),
+            RunCMD(['launchctl', 'print', gui_target], **self.debug_vars)
+            or
+            RunCMD(['launchctl', 'list', self.label], **self.debug_vars),
         )
 
     @property
@@ -333,7 +339,7 @@ class LaunchAgent(PrivilegedCMD):
 
         return sys.executable or '/usr/local/bin/python3'
 
-    def remove(self) -> bool:
+    def remove_script(self) -> bool:
         """Unloads the service and deletes the plist file."""
         if self.is_active:
             if not self.dry_run:
@@ -378,19 +384,6 @@ class LaunchAgent(PrivilegedCMD):
             f"%admin ALL=(ALL) NOPASSWD: {', '.join(commands)}\n"
         )
 
-    def sync_package(self, files: list[Path] | None = None) -> bool:
-        """Synchronizes specified files (or all outdated files) to the target installation directory."""
-        return self.package_sync.sync(files)
-
-    @property
-    def target_dir(self) -> Path:
-        """Returns the package target installation directory."""
-        return self.package_sync.target_dir
-
-    @target_dir.setter
-    def target_dir(self, val: Path) -> None:
-        self.package_sync.target_dir = val
-
     @property
     def target_plist(self) -> Path:
         """Returns the system-wide LaunchAgent path in /Library/LaunchAgents."""
@@ -400,20 +393,11 @@ class LaunchAgent(PrivilegedCMD):
     def target_plist(self, val: Path) -> None:
         self._target_plist = val
 
-    @property
-    def target_script(self) -> Path:
-        """Returns the target script path."""
-        return self.package_sync.target_script
-
-    @target_script.setter
-    def target_script(self, val: Path) -> None:
-        self.package_sync.target_script = val
-
     def uninstall(self) -> bool:
         """Removes the launchd service from startup and unlinks installed files."""
         try:
-            StartupRun.cleanup()
-            self.remove()
+            StartupRun(debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log).agent.remove_script()
+            self.remove_script()
             self._remove_sudoers()
             self.package_sync.uninstall()
             return True
@@ -421,10 +405,6 @@ class LaunchAgent(PrivilegedCMD):
         except Exception as err_uninst:
             self.log.print_store(f"Failed to uninstall {config.APP_INFO['Name']}:\n{err_uninst}", 'LaunchAgent')
             return False
-
-    def update_files(self, target: Path | None = None) -> bool:
-        """Updates specific target file or synchronizes package files if outdated."""
-        return self.package_sync.update_files(target)
 
 
 class PackageSync(PrivilegedCMD):
@@ -436,16 +416,13 @@ class PackageSync(PrivilegedCMD):
     def __init__(
         self,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         target_dir: Path = config.PATHS['Dir']['Target'],
         target_script: Path = config.PATHS['Script']['Target'],
     ) -> None:
-        self.debug = debug
-        self.debug_limit = debug_limit
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
@@ -561,6 +538,12 @@ class PackageSync(PrivilegedCMD):
                         f"Note: {self.target_script} remains.  To remove:\n  sudo rm {self.target_script}",
                         'PackageSync',
                     )
+        else:
+            self.log.print_store(f"Unable to find {self.target_dir}", 'PackageSync')
+            self.log.print_store(f"Unable to find {self.target_script}", 'PackageSync')
+            self.log.print_store(f"Uninstall of {config.APP_INFO['Name']} FAILED", 'PackageSync')
+            return False
+
         return True
 
     def update_files(self, target: Path | None = None) -> bool:
@@ -650,14 +633,13 @@ class SavePreferences(PrivilegedCMD):
         self,
         updates: dict[str, Any] | str | None = None,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         logger: Any | None = None,
         user_pref: bool = False,
     ) -> None:
         self._parse_error = False
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
@@ -761,7 +743,7 @@ class SavePreferences(PrivilegedCMD):
         self.log.print_store(f"Saved preferences to {target_pref}: {self.updates}", component='Preferences')
 
         if 'schedule' in self.updates:
-            agent = LaunchAgent(dry_run=self.dry_run, logger=self.log, **self.debug_vars)
+            agent = LaunchAgent(debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log)
             agent.install()
             agent.activate()
 
@@ -777,8 +759,7 @@ class StartupRun:
     def __init__(
         self,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         label: str = f"{config.DEFAULTS['plist']}_runonce",
         launch_agents_dir: Path | None = None,
@@ -786,27 +767,22 @@ class StartupRun:
         logger: Any | None = None,
         target_plist: Path | None = None,
     ) -> None:
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.label = label
         self.log = logger or Logger(dry_run=self.dry_run)
         self.logger = self.log
         self.agent = LaunchAgent(
             label=self.label,
+            debug_vars=self.debug_vars,
             dry_run=self.dry_run,
             launch_agents_dir=launch_agents_dir or (Path.home() / 'Library/LaunchAgents'),
             log_dir=log_dir or (Path.home() / 'Library/Logs'),
             logger=self.log,
             run_at_load=True,
-            **self.debug_vars,
         )
         if target_plist is not None:
             self.agent.target_plist = target_plist
-
-    @classmethod
-    def cleanup(cls, *, logger: Any | None = None) -> bool:
-        """Unloads and removes the temporary one-shot startup LaunchAgent if present."""
-        return cls(logger=logger).remove()
 
     @property
     def launch_agents_dir(self) -> Path:
@@ -825,19 +801,6 @@ class StartupRun:
     @log_dir.setter
     def log_dir(self, val: Path) -> None:
         self.agent.log_dir = val
-
-    @property
-    def plist_path(self) -> Path:
-        """Returns the target plist path (backwards-compatible alias for target_plist)."""
-        return self.target_plist
-
-    @plist_path.setter
-    def plist_path(self, val: Path) -> None:
-        self.target_plist = val
-
-    def remove(self) -> bool:
-        """Unloads and unlinks the runonce LaunchAgent."""
-        return self.agent.remove()
 
     def schedule(self) -> bool:
         """Creates and activates the one-shot LaunchAgent to rerun FreshenMac on next login."""
@@ -870,17 +833,13 @@ def check_plist(
     a_plist: str = config.DEFAULTS['plist'],
     cron_dict: dict | list[dict] = config.DEFAULTS['schedule'],
     *,
+    debug_vars: dict[str, int] | None = None,
     dry_run: bool = False,
     logger: Any | None = None,
 ) -> bool:
     """Checks if .plist for this file is in /Library/LaunchAgents and active, if not, creates file and activates it."""
-    agent = LaunchAgent(label=a_plist, schedule_dict=cron_dict, dry_run=dry_run, logger=logger)
+    agent = LaunchAgent(label=a_plist, debug_vars=debug_vars, schedule_dict=cron_dict, dry_run=dry_run, logger=logger)
     return agent.check_and_install()
-
-
-def cleanup_startup_run(*, logger: Any | None = None) -> bool:
-    """Unloads and removes the temporary one-shot startup LaunchAgent if present."""
-    return StartupRun.cleanup(logger=logger)
 
 
 def file_needs_update(source_file: Path, target_file: Path) -> bool:
@@ -913,8 +872,12 @@ def load_preferences() -> dict[str, Any]:
         if pref_file.is_file():
             try:
                 prefs.update(plistlib.loads(pref_file.read_bytes()))
-            except Exception:
-                pass
+            except Exception as err:
+                log = Logger()
+                log.print_store(
+                    f"[Warning] Unable to load preferences file: '{pref_file}' ({err})",
+                    component='Preferences',
+                )
     return prefs
 
 
@@ -964,30 +927,6 @@ def parse_cron(expr: str | dict[str, int] | list[dict[str, int]]) -> dict[str, i
             for j in range(stride):
                 cron_list[i * stride + j][k] = val
     return cron_list
-
-
-def uninstall_plist(
-    a_plist: str = config.DEFAULTS['plist'],
-    *,
-    dry_run: bool = False,
-    logger: Any | None = None,
-) -> bool:
-    """Removes the launchd service from startup and unlinks installed files."""
-    agent = LaunchAgent(label=a_plist, dry_run=dry_run, logger=logger)
-    return agent.uninstall()
-
-
-def update_installed_script(
-    a_script: str | Path | None = None,
-    *,
-    debug: int = 0,
-    debug_limit: int = 0,
-    dry_run: bool = False,
-    logger: Any | None = None,
-) -> bool:
-    """Updates installed script or package if the running files have higher builds."""
-    agent = LaunchAgent(debug=debug, debug_limit=debug_limit, dry_run=dry_run, logger=logger)
-    return agent.update_files(target=Path(a_script) if a_script else None)
 
 
 def write_file(a_path: Path, data: bytes, mode: int = 0o644) -> None:

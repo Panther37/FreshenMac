@@ -10,14 +10,10 @@ from freshenmac.plist import (
     PackageSync,
     SavePreferences,
     StartupRun,
-    check_plist,
-    cleanup_startup_run,
     file_needs_update,
     get_file_build,
     load_preferences,
     parse_cron,
-    uninstall_plist,
-    update_installed_script,
 )
 from freshenmac.util import Logger, RunCMD
 
@@ -109,8 +105,7 @@ class TestLaunchAgent(unittest.TestCase):
     def test_activate_failure(self, mock_cmd):
         """Verifies activate returns False when launchctl bootstrap and fallback load fail."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(agent, 'bootout') as mock_bootout, \
-            patch.object(agent, 'domain', 'gui/501'):
+        with patch.object(agent, 'bootout') as mock_bootout, patch.object(agent, 'domain', 'gui/501'):
             mock_cmd.side_effect = [
                 make_cmd(errno=1, stderr="service already loaded"),  # bootstrap
                 make_cmd(errno=1, stderr="service already loaded"),  # fallback load
@@ -123,8 +118,7 @@ class TestLaunchAgent(unittest.TestCase):
     def test_activate_success(self, mock_cmd):
         """Verifies activate boots out old agent and bootstraps new agent successfully."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(agent, 'bootout') as mock_bootout, \
-            patch.object(agent, 'domain', 'gui/501'):
+        with patch.object(agent, 'bootout') as mock_bootout, patch.object(agent, 'domain', 'gui/501'):
             mock_cmd.return_value = make_cmd(stdout="success", errno=0)
             self.assertTrue(agent.activate())
             mock_bootout.assert_called_once()
@@ -179,11 +173,17 @@ class TestLaunchAgent(unittest.TestCase):
     def test_check_and_install_already_active(self, mock_cmd):
         """Verifies check_and_install skips installation if files, plist, and launchd are current."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
-            patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False), \
-            patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True), \
-            patch.object(agent, 'install') as mock_install, \
-            patch.object(agent, 'activate') as mock_activate:
+        with patch.object(
+            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
+        ), patch.object(
+            LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False,
+        ), patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            agent, 'install',
+        ) as mock_install, patch.object(
+            agent, 'activate',
+        ) as mock_activate:
             self.assertTrue(agent.check_and_install())
             mock_install.assert_not_called()
             mock_activate.assert_not_called()
@@ -192,11 +192,17 @@ class TestLaunchAgent(unittest.TestCase):
     def test_check_and_install_needs_install(self, mock_cmd):
         """Verifies check_and_install triggers install and activate when plist requires update."""
         agent = LaunchAgent(dry_run=False)
-        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
-            patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True), \
-            patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=False), \
-            patch.object(agent, 'install', return_value=True) as mock_install, \
-            patch.object(agent, 'activate', return_value=True) as mock_activate:
+        with patch.object(
+            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
+        ), patch.object(
+            LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=False,
+        ), patch.object(
+            agent, 'install', return_value=True,
+        ) as mock_install, patch.object(
+            agent, 'activate', return_value=True,
+        ) as mock_activate:
             self.assertTrue(agent.check_and_install())
             mock_install.assert_called_once()
             mock_activate.assert_called_once()
@@ -226,7 +232,7 @@ class TestLaunchAgent(unittest.TestCase):
     def test_files_to_update_same_dir(self):
         """Verifies files_to_update returns empty list when target directory is source package."""
         agent = LaunchAgent()
-        agent.target_dir = PATHS['Dir']['Package']
+        agent.package_sync.target_dir = PATHS['Dir']['Package']
         self.assertEqual(agent.package_sync.files_to_update, [])
 
     def test_init_defaults(self):
@@ -236,35 +242,41 @@ class TestLaunchAgent(unittest.TestCase):
         self.assertEqual(agent.hour, DEFAULTS['schedule']['Hour'])
         self.assertEqual(agent.minute, DEFAULTS['schedule']['Minute'])
         self.assertEqual(agent.weekday, DEFAULTS['schedule']['Weekday'])
-        self.assertFalse(agent.debug)
+        self.assertEqual(agent.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(agent.dry_run)
         self.assertEqual(agent.launch_agents_dir, Path('/Library/LaunchAgents'))
-        self.assertEqual(agent.target_dir, PATHS['Dir']['Target'])
-        self.assertEqual(agent.target_script, PATHS['Script']['Target'])
+        self.assertEqual(agent.package_sync.target_dir, PATHS['Dir']['Target'])
+        self.assertEqual(agent.package_sync.target_script, PATHS['Script']['Target'])
 
     def test_install_dry_run(self):
         """Verifies install returns True without writing files in dry-run mode."""
         agent = LaunchAgent(dry_run=True)
-        with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[Path('foo.py')]), \
-            patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
+        with patch.object(
+            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[Path('foo.py')],
+        ), patch.object(
+            LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
+        ):
             self.assertTrue(agent.install())
 
     def test_install_normal(self):
         """Verifies install writes package files and target plist in normal mode."""
         agent = LaunchAgent(dry_run=False)
         with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.target_dir = Path(tmp_dir) / 'pkg'
+            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
             agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.target_script = agent.target_dir / 'main.py'
+            agent.package_sync.target_script = agent.package_sync.target_dir / 'main.py'
 
             dummy_src = Path(tmp_dir) / 'source_freshenmac.py'
             dummy_src.write_text("FILE_BUILD = 1\n")
 
-            with patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src]), \
-                patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
+            with patch.object(
+                PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src],
+            ), patch.object(
+                LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
+            ):
                 self.assertTrue(agent.install())
-                self.assertTrue((agent.target_dir / dummy_src.name).is_file())
+                self.assertTrue((agent.package_sync.target_dir / dummy_src.name).is_file())
                 self.assertTrue(agent.target_plist.is_file())
 
     @patch('sys.stdin.isatty', return_value=True)
@@ -281,9 +293,13 @@ class TestLaunchAgent(unittest.TestCase):
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
             agent.log_dir = Path(tmp_dir) / 'Logs'
 
-            with patch.object(Path, 'mkdir', side_effect=PermissionError("read-only")), \
-                patch.object(PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[]), \
-                patch.object(LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True):
+            with patch.object(
+                Path, 'mkdir', side_effect=PermissionError("read-only"),
+            ), patch.object(
+                PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
+            ), patch.object(
+                LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
+            ):
                 self.assertTrue(agent.install())
                 self.assertTrue(mock_util_cmd.called)
                 self.assertTrue(mock_util_cmd.call_args[1].get('need_root'))
@@ -454,8 +470,11 @@ class TestLaunchAgent(unittest.TestCase):
             executed_cmds.append(list(cmd))
             return make_cmd(errno=0)
 
-        with patch('freshenmac.plist.RunCMD', side_effect=fake_runcmd), \
-            patch('freshenmac.util.RunCMD', side_effect=fake_runcmd):
+        with patch(
+            'freshenmac.plist.RunCMD', side_effect=fake_runcmd,
+        ), patch(
+            'freshenmac.util.RunCMD', side_effect=fake_runcmd,
+        ):
             # Remove sudoers
             with patch('freshenmac.plist.Path.exists', return_value=True):
                 self.assertTrue(agent._remove_sudoers())
@@ -467,67 +486,35 @@ class TestLaunchAgent(unittest.TestCase):
         expected = Path('/Library/LaunchAgents') / f"{DEFAULTS['plist']}.plist"
         self.assertEqual(agent.target_plist, expected)
 
-    def test_top_level_wrappers(self):
-        """Verifies top-level check_plist, uninstall_plist, and update_installed_script wrappers."""
-        with patch.object(LaunchAgent, 'check_and_install', return_value=True) as mock_check, \
-            patch.object(LaunchAgent, 'uninstall', return_value=True) as mock_uninst, \
-            patch.object(LaunchAgent, 'update_files', return_value=True) as mock_update:
-            self.assertTrue(check_plist())
-            mock_check.assert_called_once()
-
-            self.assertTrue(uninstall_plist())
-            mock_uninst.assert_called_once()
-
-            self.assertTrue(update_installed_script())
-            mock_update.assert_called_once()
-
     def test_uninstall(self):
         """Verifies uninstall unloads LaunchAgent, removes sudoers, and cleans up files."""
         agent = LaunchAgent(dry_run=False)
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.target_dir = Path(tmp_dir) / 'pkg'
+            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
             agent.launch_agents_dir.mkdir(parents=True)
-            agent.target_dir.mkdir(parents=True)
+            agent.package_sync.target_dir.mkdir(parents=True)
 
             plist_path = agent.target_plist
             plist_path.write_text("<plist></plist>")
 
-            script_path = agent.target_dir / 'main.py'
+            script_path = agent.package_sync.target_dir / 'main.py'
             script_path.write_text("FILE_BUILD = 1\n")
 
-            with patch.object(LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True), \
-                patch.object(agent, 'bootout') as mock_bootout, \
-                patch.object(agent, '_remove_sudoers') as mock_remove_sudoers, \
-                patch('freshenmac.plist.StartupRun.cleanup'):
+            with patch.object(
+                LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+            ), patch.object(
+                agent, 'bootout',
+            ) as mock_bootout, patch.object(
+                agent, '_remove_sudoers',
+            ) as mock_remove_sudoers, patch(
+                'freshenmac.plist.StartupRun',
+            ):
                 self.assertTrue(agent.uninstall())
                 mock_bootout.assert_called_once()
                 mock_remove_sudoers.assert_called_once()
                 self.assertFalse(plist_path.exists())
-                self.assertFalse(agent.target_dir.exists())
-
-    def test_update_files_dry_run(self):
-        """Verifies update_files returns True in dry-run mode without modifying target file."""
-        agent = LaunchAgent(dry_run=True)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / 'installed.py'
-            self.assertTrue(agent.update_files(target=target))
-
-    def test_update_files_same_file(self):
-        """Verifies update_files detects identical source and target files and skips copying."""
-        agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            same = Path(tmp_dir) / 'same.py'
-            same.write_text("FILE_BUILD = 1\n")
-            with patch.dict(
-                'freshenmac.config.PATHS', {
-                    'Script': {
-                        'Source': same,
-                        'Target': agent.target_script,
-                    },
-                },
-            ):
-                self.assertTrue(agent.update_files(target=same))
+                self.assertFalse(agent.package_sync.target_dir.exists())
 
 
 class TestPackageSync(unittest.TestCase):
@@ -577,6 +564,7 @@ class TestPackageSync(unittest.TestCase):
             sync.target_script = sync.target_dir / 'main.py'
             src = Path(tmp_dir) / 'dummy.py'
             src.write_text("FILE_BUILD = 1\n")
+            self.assertTrue(sync.sync(files=[]))
             self.assertTrue(sync.sync(files=[src]))
             dest = sync.target_dir / 'dummy.py'
             self.assertTrue(dest.is_file())
@@ -686,12 +674,6 @@ class TestStartupRun(unittest.TestCase):
     and post-reboot cleanup.
     """
 
-    def test_cleanup_startup_run_helper(self):
-        """Verifies cleanup_startup_run delegates to StartupRun.cleanup."""
-        with patch.object(StartupRun, 'cleanup', return_value=True) as mock_cleanup:
-            self.assertTrue(cleanup_startup_run())
-            mock_cleanup.assert_called_once()
-
     def test_default_logger(self):
         """Verifies default logger initialization on StartupRun."""
         startup = StartupRun(dry_run=True)
@@ -711,7 +693,6 @@ class TestStartupRun(unittest.TestCase):
         self.assertEqual(agent.launch_agents_dir, custom_agents)
         self.assertEqual(agent.log_dir, custom_logs)
         self.assertEqual(agent.target_plist, custom_plist)
-        self.assertEqual(agent.plist_path, custom_plist)
 
     def test_logger_integration(self):
         """Verifies custom logger propagation to underlying LaunchAgent in StartupRun."""
@@ -737,41 +718,35 @@ class TestStartupRun(unittest.TestCase):
         self.assertEqual(agent.log_dir, new_logs)
         self.assertEqual(agent.agent.log_dir, new_logs)
         self.assertEqual(agent.target_plist, new_plist)
-        self.assertEqual(agent.plist_path, new_plist)
         self.assertEqual(agent.agent.target_plist, new_plist)
 
-        alt_plist = Path('/tmp/alt.plist')
-        agent.plist_path = alt_plist
-        self.assertEqual(agent.target_plist, alt_plist)
-        self.assertEqual(agent.agent.target_plist, alt_plist)
-
     def test_remove_missing_file_returns_true(self):
-        """Verifies remove returns True when target plist does not exist."""
+        """Verifies remove_script returns True when target plist does not exist."""
         agent = StartupRun()
-        agent.plist_path = Path('/nonexistent/path/runonce.plist')
-        self.assertTrue(agent.remove())
+        agent.target_plist = Path('/nonexistent/path/runonce.plist')
+        self.assertTrue(agent.agent.remove_script())
 
     def test_schedule_and_remove(self):
-        """Verifies schedule creates RunAtLoad plist and remove deletes it."""
+        """Verifies schedule creates RunAtLoad plist and remove_script deletes it."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = StartupRun(dry_run=False)
             agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
             agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.plist_path = agent.launch_agents_dir / f"{agent.label}.plist"
+            agent.target_plist = agent.launch_agents_dir / f"{agent.label}.plist"
 
             with patch('freshenmac.plist.RunCMD') as mock_cmd:
                 mock_cmd.return_value.returncode = 0
                 self.assertTrue(agent.schedule())
-                self.assertTrue(agent.plist_path.is_file())
+                self.assertTrue(agent.target_plist.is_file())
 
-                with open(agent.plist_path, 'rb') as f:
+                with open(agent.target_plist, 'rb') as f:
                     plist_data = plistlib.load(f)
                 self.assertEqual(plist_data['Label'], agent.label)
                 self.assertTrue(plist_data['RunAtLoad'])
 
                 # Test remove
-                self.assertTrue(agent.remove())
-                self.assertFalse(agent.plist_path.exists())
+                self.assertTrue(agent.agent.remove_script())
+                self.assertFalse(agent.target_plist.exists())
 
     def test_schedule_dry_run(self):
         """Verifies schedule returns True without creating files in dry run."""

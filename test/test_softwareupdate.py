@@ -143,8 +143,11 @@ class TestSoftwareUpdate(unittest.TestCase):
     def test_notify_manual_dry_run(self):
         """Verifies notify_manual in dry-run mode skips opening settings and dialogs."""
         swu = SoftwareUpdate(dry_run=True)
-        with patch('freshenmac.softwareupdate.util.RunCMD') as mock_cmd, \
-            patch('freshenmac.softwareupdate.util.RunAppleScript.dialog') as mock_dialog:
+        with patch(
+            'freshenmac.softwareupdate.util.RunCMD'
+        ) as mock_cmd, patch(
+            'freshenmac.softwareupdate.util.RunAppleScript.dialog'
+        ) as mock_dialog:
             swu.notify_manual('macOS 27.0.1-26A434')
             mock_cmd.assert_not_called()
             mock_dialog.assert_not_called()
@@ -152,9 +155,13 @@ class TestSoftwareUpdate(unittest.TestCase):
     def test_notify_manual_opens_settings_and_dialog(self):
         """Verifies notify_manual opens System Settings pane and launches AppleScript alert dialog."""
         swu = SoftwareUpdate(dry_run=False)
-        with patch('freshenmac.softwareupdate.util.RunCMD') as mock_cmd, \
-            patch('freshenmac.softwareupdate.util.RunAppleScript.dialog') as mock_dialog, \
-            patch('builtins.print'):
+        with patch(
+            'freshenmac.softwareupdate.util.RunCMD'
+        ) as mock_cmd, patch(
+            'freshenmac.softwareupdate.util.RunAppleScript.dialog'
+        ) as mock_dialog, patch(
+            'builtins.print'
+        ):
             swu.notify_manual('macOS 27.0.1-26A434')
 
             # 1. Opens the Software Update preference extension
@@ -188,8 +195,11 @@ class TestSoftwareUpdate(unittest.TestCase):
                 mock.std_all = "Installing... Action: restart"
             return mock
 
-        with patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
-            patch.object(self.swu, 'check_staged_reboot'):
+        with patch(
+            'freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd
+        ), patch.object(
+            self.swu, 'check_staged_reboot'
+        ):
             self.swu.update()
             self.assertTrue(self.reboot.required)
             self.assertTrue(self.swu.updates_performed)
@@ -214,8 +224,11 @@ class TestSoftwareUpdate(unittest.TestCase):
                 mock.std_all = "Success"
             return mock
 
-        with patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
-            patch.object(self.swu, 'check_staged_reboot'):
+        with patch(
+            'freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd
+        ), patch.object(
+            self.swu, 'check_staged_reboot'
+        ):
             self.swu.update()
             self.assertTrue(self.reboot.required)
             self.assertTrue(self.swu.updates_performed)
@@ -235,9 +248,13 @@ class TestSoftwareUpdate(unittest.TestCase):
                 mock.std_all = "Downloaded: macOS 27.0.1\nFailed to authenticate"
             return mock
 
-        with patch('freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd), \
-            patch.object(self.swu, 'notify_manual') as mock_notify, \
-            patch.object(self.swu, 'check_staged_reboot'):
+        with patch(
+            'freshenmac.softwareupdate.util.RunCMD', side_effect=fake_runcmd
+        ), patch.object(
+            self.swu, 'notify_manual'
+        ) as mock_notify, patch.object(
+            self.swu, 'check_staged_reboot'
+        ):
             self.swu.update()
             mock_notify.assert_called_once_with('macOS 27.0.1-26A434')
             self.assertIn('macOS 27.0.1-26A434', self.swu.summary['available'])

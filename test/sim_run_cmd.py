@@ -2,10 +2,9 @@
 """
 Simulated RunCMD test double and output recorder.
 
-Provides SimRunCMD, an in-memory and fixture-backed implementation of RunCMD
-that bypasses subprocess execution while preserving all RunCMD protocols,
-methods, and attributes. Also functions as a standalone command recorder
-that executes terminal commands through RunCMD and saves fixtures.
+Provides SimRunCMD, an in-memory and fixture-backed implementation of RunCMD that bypasses subprocess execution while
+preserving all RunCMD protocols, methods, and attributes.  Also functions as a standalone command recorder that
+executes terminal commands through RunCMD and saves fixtures.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ if str(SRC_DIR) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from freshenmac.util import RunCMD  # noqa: E402
+from freshenmac.util import RunCMD  # noqa: E402 module level import not at top of file
 
 DEFAULT_TIMEOUT: int = 86400  # 1 day (24 * 60 * 60 seconds)
 DEFAULT_FIXTURES_DIR: Path = REPO_ROOT / 'test' / 'fixtures'
@@ -50,9 +49,8 @@ class SimRunCMD(RunCMD):
     """
     Simulated RunCMD test double and output recorder.
 
-    Bypasses subprocess execution during initialization while preserving all
-    RunCMD sequence, boolean, and string protocols. Supports live recording
-    via RunCMD to timestamped directories and loading from saved fixtures.
+    Bypasses subprocess execution during initialization while preserving all RunCMD sequence, boolean, and string
+    protocols.  Supports live recording via RunCMD to timestamped directories and loading from saved fixtures.
     """
 
     def __init__(
@@ -123,8 +121,7 @@ class SimRunCMD(RunCMD):
     @classmethod
     def load(cls, folder_path: str | Path) -> SimRunCMD:
         """
-        Loads a SimRunCMD instance from a saved fixture directory containing
-        attributes.json, stdout.txt, and stderr.txt.
+        Loads a SimRunCMD instance from a saved fixture dir containing attributes.json, stdout.txt, and stderr.txt.
         """
         folder = Path(folder_path)
         attr_file = folder / 'attributes.json'
@@ -158,7 +155,7 @@ class SimRunCMD(RunCMD):
         Executes cmd through RunCMD, measures runtime, and saves outputs to a timestamped folder.
 
         Folder format: YYYYMMDD-HHMM_<command_slug>
-        Pre-checks and creates the directory before executing. Raises FileExistsError
+        Pre-checks and creates the directory before executing.  Raises FileExistsError
         or OSError if the folder cannot be created.
         """
         if isinstance(cmd, str):
@@ -227,6 +224,7 @@ class SimRunCMD(RunCMD):
 
         with open(target / 'attributes.json', 'w', encoding='utf-8') as f:
             json.dump(attributes, f, indent=2)
+        # `repr_std*` probably not needed
         with open(target / 'repr_stderr.txt', 'w', encoding='utf-8') as f:
             f.write(repr(self.stderr))
         with open(target / 'repr_stdout.txt', 'w', encoding='utf-8') as f:

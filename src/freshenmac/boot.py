@@ -15,7 +15,7 @@ from freshenmac.config import APP_INFO, IDLE_THRESHOLD
 if TYPE_CHECKING:
     from freshenmac.computer import MacOS
 
-FILE_BUILD = 20261013
+FILE_BUILD = 20261015
 
 
 @dataclass
@@ -74,13 +74,12 @@ class Reboot:
         self,
         hardware: MacOS | None = None,
         *,
-        debug: int = 0,
-        debug_limit: int = 0,
+        debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
         log_file: Path | None = None,
         logger: Any | None = None,
     ) -> None:
-        self.debug_vars = {'debug': debug, 'debug_limit': debug_limit}
+        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.max_now_attempts = 10
         self.max_snooze = 3
         self.snoozes_left = self.max_snooze
@@ -88,7 +87,7 @@ class Reboot:
             self.computer = hardware
         else:
             from freshenmac.computer import MacOS
-            self.computer = MacOS(dry_run=dry_run, **self.debug_vars)
+            self.computer = MacOS(debug_vars=self.debug_vars, dry_run=dry_run)
         self.dry_run = dry_run or self.computer.dry_run
         self.log_file = log_file or util.get_log_file()
         self.logger = logger or util.Logger(dry_run=self.dry_run, log_file=self.log_file)
