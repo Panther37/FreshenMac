@@ -116,19 +116,19 @@ class Logger:
         # Stage 5: Unrecoverable failure - disable logging
         self._disable_logger(an_error)
 
-    @staticmethod
-    def print(message: str = '') -> None:
-        """Outputs string to screen (stdout)."""
-        print(message)
-
     def print_store(
         self,
         message: str,
         component: str | None = None,
     ) -> None:
         """Both prints to screen and stores formatted string to log file."""
-        self.print(message)
+        self.printf(message)
         self.store(message, component=component)
+
+    @staticmethod
+    def printf(message: str = '') -> None:
+        """Outputs string to screen (stdout)."""
+        print(message)
 
     def store(
         self,

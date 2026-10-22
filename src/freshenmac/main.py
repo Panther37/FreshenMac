@@ -17,7 +17,12 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261018
+FILE_BUILD = 20261019
+REBOOT_STR = {
+    'Default': ['DEFAULT'],
+    'Force':   ['FORCE', 'YES'],
+    'Skip':    ['NO', 'SKIP'],
+}
 
 
 def actions(some_options: argparse.Namespace, logger: Any | None = None) -> bool:
@@ -90,7 +95,7 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
         if sys.stdin and hasattr(sys.stdin, 'isatty') and sys.stdin.isatty():
             try:
                 user_password = getpass.getpass(f"Password for {console_user} (macOS updates / authrestart): ")
-            except (io.UnsupportedOperation, EOFError):
+            except (EOFError, io.UnsupportedOperation):
                 user_password = None
 
     with util.SudoKeepAlive():
@@ -129,13 +134,13 @@ def perform_updates(
     mac = computer.MacOS(
         console_user=console_user,
         debug_vars=some_options.debug_vars,
-        force_reboot=some_options.force_reboot,
+        force_reboot=True if some_options.reboot > 0 else False,
         ignore_mas=some_options.ignore_mas,
         logger=logger,
         user_password=user_password,
     )
     mac.update('all')
-    if some_options.reboot:
+    if some_options.reboot > -1:
         mac.check_and_reboot()
     else:
         logger.print_store('Not rebooting due to command-line argument.')
@@ -211,32 +216,9 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     pref_group.add_argument(
-        '--schedule', '--cron', const='help', default=None, dest='schedule', nargs='?',
+        '--schedule', '--cron', const='help', default=None, dest='schedule', nargs='?', type=str,
         metavar='CRON',
-        help='Set or update the LaunchAgent schedule using cron syntax (e.g. "0 6 * * 1" or "0 6 1,15 * *")',
-    )
-
-    boot_group = parser.add_argument_group(
-        "Reboot Options",
-        "These options change if your computer is going to reboot or not.  Pick one, don't use them both.",
-    )
-    boot_group.add_argument(
-        '-f', '--force-reboot', action='store_true', default=False,
-        help='Force a reboot at the end of updates, bypassing requirement checks',
-    )
-    boot_group.add_argument(
-        '-r', '--no-reboot', dest='reboot', action='store_false', default=True,
-        help='Do not attempt to reboot',
-    )
-
-    update_group = parser.add_mutually_exclusive_group()
-    update_group.add_argument(
-        '-u', '--update', dest='update', action='store_true', default=None,
-        help=f"Update installed {APP_INFO['Name']} if running files have a higher FILE_BUILD",
-    )
-    update_group.add_argument(
-        '--no-update', dest='update', action='store_false',
-        help=f"Do not update installed {APP_INFO['Name']}",
+        help='Set or update the LaunchAgent schedule using cron syntax (e.g. `0 6 * * 1` or `0 6 1,15 * *`)',
     )
 
     cli_group = parser.add_argument_group(
@@ -251,10 +233,22 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         type=str.title,
     )
     cli_group.add_argument(
+        '-r', '--reboot',
+        choices=sum(REBOOT_STR.values(), []),
+        default=0,
+        help='Reboot: FORCE, or SKIP reboot at the end of updates, bypassing checks.  Case insensitive.',
+        type=str.upper,
+    )
+    cli_group.add_argument('--dry-run', action='store_true', default=False, help='Dry run, for testing')
+    cli_group.add_argument(
         '-i', '--ignore-mas', '--skip-mas', '--skip-app',
         dest='ignore_mas', nargs='+', default=None,
         metavar='APP',
         help='Skip specified App Store application(s) by name or ID for this execution only.',
+    )
+    cli_group.add_argument(
+        '-z', '--standalone', action='store_true', default=False,
+        help='Run once without installing anything or setting up a schedule',
     )
     cli_group.add_argument('--version', action='version', version=f"{APP_INFO['Name']} {APP_INFO['Version']}")
     return yield_rules(parser.parse_args(some_args))
@@ -262,11 +256,23 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
 
 def yield_rules(flags: argparse.Namespace) -> argparse.Namespace:
     # Update
-    if getattr(flags, 'update', None) is None:
+    if flags.standalone:
+        flags.update = False
+    else:
         flags.update = util.is_interactive()
+    # Reboot
+    if flags.reboot:
+        reboot_check = str(flags.reboot).upper()
+        if reboot_check in REBOOT_STR['Force']:
+            flags.reboot = 1
+        elif reboot_check in REBOOT_STR['Skip']:
+            flags.reboot = -1
+        else:
+            flags.reboot = 0
     # Debug, Trace, Verbose
     if flags.trace:
         flags.debug_vars = {'debug': 9, 'debug_limit': -1}
+        del flags.debug, flags.debug_limit
         print(json.dumps(vars(flags), indent=2))
     else:
         if flags.debug_limit and not flags.debug:

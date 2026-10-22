@@ -328,9 +328,8 @@ class TestHomeBrew(unittest.TestCase):
             # Current package untouched
             self.assertFalse(
                 any(
-                    all(
-                        ['pkg_installed_current' in c, any(a in c for a in ('install', 'upgrade'))],
-                    ) for c in executed_cmds,
+                    all(['pkg_installed_current' in c, any(a in c for a in ('install', 'upgrade'))])
+                    for c in executed_cmds
                 ),
             )
 

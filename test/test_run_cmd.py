@@ -110,10 +110,10 @@ class TestLogging(unittest.TestCase):
                 self.assertIn('[PermTest] Fallback message', user_log.read_text(encoding='utf-8'))
 
     def test_logger_print_outputs_to_stdout(self):
-        """Verifies logger.print outputs to standard stdout via builtins.print."""
+        """Verifies logger.printf outputs to standard stdout via builtins.print."""
         logger = Logger()
         with patch('builtins.print') as mock_print:
-            logger.print("Screen output message")
+            logger.printf("Screen output message")
             mock_print.assert_called_once_with("Screen output message")
 
     def test_logger_print_store_calls_print_and_store(self):
