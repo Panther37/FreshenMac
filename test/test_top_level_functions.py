@@ -14,10 +14,9 @@ from freshenmac.plist import check_plist
 
 class TestTopLevelFunctions(unittest.TestCase):
     """
-    Unit tests for top-level entry point, CLI argument parsing, and system setup functions.
+    Unit tests for top-level entry point and CLI argument parsing.
 
-    Tests main() execution paths, sudo credential priming, argument parsing flags,
-    LaunchAgent installation/uninstallation, and self-updating script builds.
+    Tests main() execution paths, sudo credential priming, argument parsing flags, and update workflow routing.
     """
 
     def setUp(self):
@@ -92,7 +91,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         ), patch(
             'freshenmac.plist.PackageSync.update_files',
         ), patch(
-            'sys.argv', ['freshenmac.py', '-f', '-l', '500'],
+            'sys.argv', ['freshenmac.py', '-r', 'force', '-l', '500'],
         ):
             mock_mac = mock_mac_cls.return_value
 
@@ -288,7 +287,7 @@ class TestTopLevelFunctions(unittest.TestCase):
             mock_spinner.assert_called_once()
 
     def test_main_without_update(self):
-        """Verifies --no-update skips self-updating check but proceeds with system updates."""
+        """Verifies -z/--standalone skips self-updating check but proceeds with system updates."""
         # Arrange
         with patch(
             'freshenmac.plist.PackageSync.update_files',
@@ -297,7 +296,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         ) as mock_mac_cls, patch(
             'freshenmac.plist.check_plist',
         ), patch(
-            'sys.argv', ['freshenmac.py', '--no-update'],
+            'sys.argv', ['freshenmac.py', '--standalone'],
         ):
             mock_mac = mock_mac_cls.return_value
 
@@ -310,7 +309,7 @@ class TestTopLevelFunctions(unittest.TestCase):
             mock_mac.update.assert_called_once_with('all')
 
     def test_yield_arguments_action(self):
-        """Verifies yield_arguments parses -a and --action flags and normalizes to title case."""
+        """Verifies yield_arguments handles -a / --action flag correctly."""
         with patch('sys.argv', ['freshenmac.py', '-a', 'install']):
             opts = yield_arguments()
             self.assertEqual(opts.action, 'Install')
@@ -330,8 +329,7 @@ class TestTopLevelFunctions(unittest.TestCase):
             opts = yield_arguments()
             self.assertIsNone(opts.action)
             self.assertEqual(opts.debug_vars, {'debug': 0, 'debug_limit': 0})
-            self.assertFalse(opts.force_reboot)
-            self.assertTrue(opts.reboot)
+            self.assertEqual(opts.reboot, 0)
             self.assertFalse(opts.spinner)
             self.assertTrue(opts.update)
 
@@ -341,17 +339,28 @@ class TestTopLevelFunctions(unittest.TestCase):
             self.assertFalse(opts.update)
 
     def test_yield_arguments_flags(self):
-        """Verifies yield_arguments parses short option flags (-f, -r, -v, -u)."""
-        with patch('sys.argv', ['freshenmac.py', '-f', '-r', '-v', '-u']):
+        """Verifies yield_arguments parses short option flags (-r, -v, -z)."""
+        with patch('sys.argv', ['freshenmac.py', '-r', 'force', '-v']):
             opts = yield_arguments()
-            self.assertTrue(opts.force_reboot)
-            self.assertFalse(opts.reboot)
+            self.assertEqual(opts.reboot, 1)
             self.assertEqual(opts.debug_vars, {'debug': 1, 'debug_limit': 0})
-            self.assertTrue(opts.update)
 
-        with patch('sys.argv', ['freshenmac.py', '-v']):
+        with patch('sys.argv', ['freshenmac.py', '-r', 'skip']):
             opts = yield_arguments()
-            self.assertEqual(opts.debug_vars, {'debug': 1, 'debug_limit': 0})
+            self.assertEqual(opts.reboot, -1)
+
+        with patch('sys.argv', ['freshenmac.py', '-r', 'default']):
+            opts = yield_arguments()
+            self.assertEqual(opts.reboot, 0)
+
+        with patch('sys.argv', ['freshenmac.py', '-r']):
+            with self.assertRaises(SystemExit):
+                yield_arguments()
+
+        with patch('sys.argv', ['freshenmac.py', '-z']):
+            opts = yield_arguments()
+            self.assertTrue(opts.standalone)
+            self.assertFalse(opts.update)
 
     def test_yield_arguments_ignore_mas(self):
         """Verifies yield_arguments parses --ignore-mas, --skip-mas, and -i aliases."""
@@ -370,16 +379,6 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch('sys.argv', ['freshenmac.py', '--skip-app', 'Telegram']):
             opts = yield_arguments()
             self.assertEqual(opts.ignore_mas, ['Telegram'])
-
-    def test_yield_arguments_no_update(self):
-        """Verifies yield_arguments handles --no-update flag correctly."""
-        with patch(
-            'sys.argv', ['freshenmac.py', '--no-update'],
-        ), patch(
-            'freshenmac.util.is_interactive', return_value=True,
-        ):
-            opts = yield_arguments()
-            self.assertFalse(opts.update)
 
     def test_yield_arguments_save_prefs(self):
         """Verifies yield_arguments parses -s and --save-prefs options."""

@@ -152,19 +152,19 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_build_plist_data_with_preferences(self):
         """Verifies build_plist_data incorporates cron schedule from stored preferences."""
-        agent = LaunchAgent()
         with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
+            agent = LaunchAgent()
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 30, 'Hour': 7, 'Weekday': 2})
 
     def test_build_plist_data_with_dict_preferences(self):
         """Verifies build_plist_data incorporates pre-parsed dict schedule from preferences."""
-        agent = LaunchAgent()
         with patch(
             'freshenmac.plist.load_preferences',
             return_value={'schedule': {'Minute': 0, 'Hour': 6, 'Weekday': 1}},
         ):
+            agent = LaunchAgent()
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 0, 'Hour': 6, 'Weekday': 1})
@@ -366,12 +366,6 @@ class TestLaunchAgent(unittest.TestCase):
             component='LaunchAgent',
         )
 
-    def test_old_user_plist(self):
-        """Verifies old_user_plist returns legacy user LaunchAgents path for migration/cleanup."""
-        agent = LaunchAgent()
-        expected = Path.home() / 'Library/LaunchAgents' / f"{DEFAULTS['plist']}.plist"
-        self.assertEqual(agent.old_user_plist, expected)
-
     def test_parse_cron_invalid(self):
         """Verifies parse_cron raises ValueError with helpful guidance when token count is invalid."""
         with self.assertRaises(ValueError) as ctx:
@@ -460,6 +454,23 @@ class TestLaunchAgent(unittest.TestCase):
         py_bin = agent.python_bin
         self.assertIsInstance(py_bin, str)
         self.assertTrue('python' in py_bin)
+
+    def test_remove_script(self):
+        """Verifies remove_script unloads active service and deletes target plist."""
+        agent = LaunchAgent(dry_run=False)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
+            agent.launch_agents_dir.mkdir(parents=True)
+            plist_path = agent.target_plist
+            plist_path.write_text("<plist></plist>")
+            with patch.object(
+                LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+            ), patch.object(
+                agent, 'bootout',
+            ) as mock_bootout:
+                self.assertTrue(agent.remove_script())
+                mock_bootout.assert_called_once()
+                self.assertFalse(plist_path.exists())
 
     def test_sudoers_lifecycle(self):
         """Verifies _remove_sudoers cleans up /etc/sudoers.d configuration."""
@@ -630,12 +641,12 @@ class TestSavePreferences(unittest.TestCase):
         calls = [c[0][0] for c in mock_logger.print_store.call_args_list]
         self.assertTrue(any("[Error] Invalid schedule:" in call for call in calls))
 
-    def test_print_help_uses_logger_print(self):
+    def test_print_help_uses_logger_printf(self):
         """Verifies print_help outputs documentation via configured logger."""
         mock_logger = MagicMock()
         pref = SavePreferences(dry_run=True, logger=mock_logger)
         pref.print_help()
-        self.assertTrue(mock_logger.print.called)
+        self.assertTrue(mock_logger.printf.called)
 
     def test_save_dry_run_logs(self):
         """Verifies dry-run save logs intentions without modifying preferences."""

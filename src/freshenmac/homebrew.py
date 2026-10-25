@@ -13,7 +13,7 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261017
+FILE_BUILD = 20261021
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(
@@ -104,13 +104,13 @@ class HomeBrew:
                             cmake_list.append(name)
             except Exception as err:
                 if self.debug_vars['debug'] > 0:
-                    self.logger.print(f"[Warning] Failed to parse brew info JSON: {err}")
+                    self.logger.printf(f"[Warning] Failed to parse brew info JSON: {err}")
 
         if 'cmake' in cmake_list:
             cmake_list.remove('cmake')
             cmake_list.insert(0, 'cmake')
         if self.debug_vars['debug'] > 1:
-            self.logger.print(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
+            self.logger.printf(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
         return cmake_list
 
     def _get_outdated_casks(self) -> dict[str, str]:
@@ -124,7 +124,7 @@ class HomeBrew:
 
         except Exception as err:
             if self.debug_vars['debug'] > 0:
-                self.logger.print(f"[Warning] Failed to parse brew outdated casks JSON: {err}")
+                self.logger.printf(f"[Warning] Failed to parse brew outdated casks JSON: {err}")
             return {}
 
     def _get_outdated_formulae(self) -> dict[str, str]:
@@ -138,16 +138,16 @@ class HomeBrew:
 
         except Exception as err:
             if self.debug_vars['debug'] > 0:
-                self.logger.print(f"[Warning] Failed to parse brew outdated JSON: {err}")
+                self.logger.printf(f"[Warning] Failed to parse brew outdated JSON: {err}")
             return {}
 
     def _read_outdated(self, json_str: str) -> dict[str, str]:
         data = json.loads(json_str)
         if self.debug_vars['debug'] > 0:
             if self.debug_vars['debug'] == 1:
-                self.logger.print(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
+                self.logger.printf(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
             else:
-                self.logger.print(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
+                self.logger.printf(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
         outdated: dict[str, str] = {}
         for i in data.get('formulae', []):
             if i.get('pinned') or 'name' not in i:
@@ -162,7 +162,7 @@ class HomeBrew:
                 current_ver = parse_version(current)
                 if latest_installed >= current_ver:
                     if self.debug_vars['debug'] > 0:
-                        self.logger.print(
+                        self.logger.printf(
                             f"[Skipping] '{name}' installed ({installed}) "
                             f"is already at or above current version ({current}).",
                         )
@@ -279,15 +279,15 @@ class HomeBrew:
                 already_ok.append(dep)
 
         for dep in already_ok:
-            self.logger.print(f"Dependency '{dep}' for '{a_formula}' is already installed and up to date.")
+            self.logger.printf(f"Dependency '{dep}' for '{a_formula}' is already installed and up to date.")
         if to_update:
             self.log(f"Dependencies for '{a_formula}' needing upgrade ({len(to_update)}):")
             for dep, ver_str in to_update:
-                self.logger.print(f"  • {dep} ({ver_str})")
+                self.logger.printf(f"  • {dep} ({ver_str})")
         if to_install:
             self.log(f"Dependencies for '{a_formula}' needing installation ({len(to_install)}):")
             for dep in to_install:
-                self.logger.print(f"  • {dep}")
+                self.logger.printf(f"  • {dep}")
 
         success = True
         for dep, ver_str in to_update:
@@ -390,7 +390,7 @@ class HomeBrew:
             ver = outdated_formulae.get(f_name, '')
             ver_str = f"{f_name} ({ver})" if ver else f_name
             cmake_dict[f_name] = ver_str
-            self.logger.print(f"  • {ver_str}")
+            self.logger.printf(f"  • {ver_str}")
 
         if not self.xcode.check_and_install_clt():
             self.log("[Warning] Skipping CMake builds because Xcode Command Line Tools are missing.")
@@ -600,7 +600,7 @@ class HomeBrew:
             )
             for f_name, ver in remaining_formulae.items():
                 ver_str = f" ({ver})" if ver else ""
-                self.logger.print(f"  • {f_name}{ver_str}")
+                self.logger.printf(f"  • {f_name}{ver_str}")
             self._upgrade_formulae(remaining_formulae)
         elif not cmake_formulae:
             self.log("All Homebrew formulae are up to date.")
@@ -612,7 +612,7 @@ class HomeBrew:
             )
             for c_name, ver in outdated_casks.items():
                 ver_str = f" ({ver})" if ver else ""
-                self.logger.print(f"  • {c_name}{ver_str}")
+                self.logger.printf(f"  • {c_name}{ver_str}")
             self._upgrade_casks(outdated_casks)
         else:
             self.log("All Homebrew casks are up to date.")
@@ -655,12 +655,12 @@ class HomeBrew:
         if self.summary_results['updated']:
             self.log(f"\nSuccessfully updated {len(self.summary_results['updated'])} Homebrew package(s):")
             for pkg, ver in self.summary_results['updated'].items():
-                self.logger.print(f"  ✔︎ {pkg} ({ver})")
+                self.logger.printf(f"  ✔︎ {pkg} ({ver})")
         if self.summary_results['installed']:
             self.log(f"\nNewly installed {len(self.summary_results['installed'])} Homebrew package(s):")
             for pkg, ver in self.summary_results['installed'].items():
-                self.logger.print(f"  ✚ {pkg} ({ver})")
+                self.logger.printf(f"  ✚ {pkg} ({ver})")
         if self.summary_results['unchanged']:
             self.log(f"\nAttempted but unchanged {len(self.summary_results['unchanged'])} Homebrew package(s):")
             for pkg, ver in self.summary_results['unchanged'].items():
-                self.logger.print(f"  • {pkg} ({ver})")
+                self.logger.printf(f"  • {pkg} ({ver})")

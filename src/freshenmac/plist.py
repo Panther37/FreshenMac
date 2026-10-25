@@ -13,7 +13,7 @@ from typing import Any
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261019
+FILE_BUILD = 20261022
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
@@ -192,8 +192,6 @@ class LaunchAgent(PrivilegedCMD):
         RunCMD(['launchctl', 'bootout', f"user/{uid}/{self.label}"], **self.debug_vars)
         if self.target_plist.is_file():
             RunCMD(['launchctl', 'unload', str(self.target_plist)], **self.debug_vars)
-        if self.old_user_plist.is_file():
-            RunCMD(['launchctl', 'unload', '-w', str(self.old_user_plist)], **self.debug_vars)
         RunCMD(['launchctl', 'remove', self.label], **self.debug_vars)
         return True
 
@@ -239,15 +237,6 @@ class LaunchAgent(PrivilegedCMD):
 
     def check_and_install(self) -> bool:
         """Verifies package files and LaunchAgent installation, activating if needed."""
-        if self.old_user_plist.is_file() and not self.dry_run:
-            if RunCMD(['launchctl', 'unload', '-w', str(self.old_user_plist)], **self.debug_vars):
-                self.log.print_store(f"Unloaded legacy user LaunchAgent: {self.old_user_plist.name}", 'LaunchAgent')
-            else:
-                self.log.print_store(f"{self.old_user_plist.name} was not active in launchd", 'LaunchAgent')
-            try:
-                self.old_user_plist.unlink()
-            except OSError as err_os:
-                self.log.print_store(f"Failed to remove {self.old_user_plist.name}: {err_os}", 'LaunchAgent')
         if self.package_sync.files_to_update:
             if not self.package_sync.sync(self.package_sync.files_to_update):
                 return False
@@ -315,11 +304,6 @@ class LaunchAgent(PrivilegedCMD):
         )
 
     @property
-    def old_user_plist(self) -> Path:
-        """Returns the obsolete per-user LaunchAgent path in ~/Library/LaunchAgents."""
-        return Path.home() / 'Library/LaunchAgents' / f"{self.label}.plist"
-
-    @property
     def plist_needs_install(self) -> bool:
         """Checks if the target plist file is missing, modified, or has incorrect permissions."""
         if not self.target_plist.is_file():
@@ -346,22 +330,24 @@ class LaunchAgent(PrivilegedCMD):
                 self.bootout()
             self.log.print_store(f"Unloaded launchd service: {self.label}", 'LaunchAgent')
 
-        for plist_path in [self.target_plist, self.old_user_plist]:
-            if not plist_path.is_file():
-                continue
+        if not self.target_plist.is_file():
+            return True
 
-            if self.dry_run:
-                self.log.print_store(f"[Dry-run] Would remove {plist_path}", 'LaunchAgent')
-                continue
+        if self.dry_run:
+            self.log.print_store(f"[Dry-run] Would remove {self.target_plist}", 'LaunchAgent')
+            return True
 
-            try:
-                plist_path.unlink()
-                self.log.print_store(f"Removed {plist_path}", 'LaunchAgent')
-            except PermissionError:
-                if self.run_privileged(['rm', '-f', str(plist_path)], name_running=f"  - Plist: {plist_path}"):
-                    self.log.print_store(f"Removed {plist_path}", 'LaunchAgent')
-                else:
-                    self.log.print_store(f"Note: {plist_path} remains.  To remove: sudo rm {plist_path}", 'LaunchAgent')
+        try:
+            self.target_plist.unlink()
+            self.log.print_store(f"Removed {self.target_plist}", 'LaunchAgent')
+        except PermissionError:
+            if self.run_privileged(['rm', '-f', str(self.target_plist)], name_running=f"  - Plist: {self.target_plist}"):
+                self.log.print_store(f"Removed {self.target_plist}", 'LaunchAgent')
+            else:
+                self.log.print_store(
+                    f"Note: {self.target_plist} remains.  To remove: sudo rm {self.target_plist}",
+                    'LaunchAgent',
+                )
         return True
 
     @property
@@ -694,7 +680,7 @@ class SavePreferences(PrivilegedCMD):
         return self._normalize({key: value})
 
     def print_help(self) -> None:
-        self.log.print(
+        self.log.printf(
             f"\n{config.APP_INFO['Name']} Preferences:\n"
             f"▷ {config.PATHS['Prefs']['Default']}\n▷ {config.PATHS['Prefs']['User']}\n",
         )
@@ -710,7 +696,7 @@ class SavePreferences(PrivilegedCMD):
                 help_line.append(f"\tNote:     {a_note}")
             help_line.append(a_line)
             help_display.append('\n'.join(help_line))
-        self.log.print(f"\n".join(help_display))
+        self.log.printf(f"\n".join(help_display))
 
     def save(self) -> bool:
         if not self.updates:
@@ -718,7 +704,7 @@ class SavePreferences(PrivilegedCMD):
             return not self._parse_error
 
         if self.debug_vars['debug'] > 1:
-            self.log.print(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
+            self.log.printf(f"SavePreferences.save: Saving preferences:\n{json.dumps(self.updates, indent=2)}")
 
         target_pref = config.PATHS['Prefs']['User'] if self.user_pref else config.PATHS['Prefs']['Default']
         prefs = load_preferences()
@@ -838,8 +824,13 @@ def check_plist(
     logger: Any | None = None,
 ) -> bool:
     """Checks if .plist for this file is in /Library/LaunchAgents and active, if not, creates file and activates it."""
-    agent = LaunchAgent(label=a_plist, debug_vars=debug_vars, schedule_dict=cron_dict, dry_run=dry_run, logger=logger)
-    return agent.check_and_install()
+    return LaunchAgent(
+        label=a_plist,
+        debug_vars=debug_vars,
+        dry_run=dry_run,
+        logger=logger,
+        schedule_dict=cron_dict,
+    ).check_and_install()
 
 
 def file_needs_update(source_file: Path, target_file: Path) -> bool:
