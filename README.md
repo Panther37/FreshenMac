@@ -237,9 +237,9 @@ flowchart TD
   `Uninstall`), prompts for administrator passwords when needed, and starts tasks.
 - `freshenmac/computer.py`: Coordinates the update run. Checks hardware details, uptime, and idle time. Prints the final
   summary report.
-- `freshenmac/homebrew.py`: Updates Homebrew tools and apps. Checks dependency prerequisites before builds, truncates
-  long error outputs, handles source code builds on Intel Macs, and cleans up old files. Filters reboot triggers
-  strictly to system restarts.
+- `freshenmac/homebrew.py`: Updates Homebrew tools and apps using a single-pass query (`brew outdated --json=v2`) for
+  formulae and casks. Checks dependency prerequisites before builds, truncates long error outputs, handles source code
+  builds on Intel Macs, and cleans up old files. Filters reboot triggers strictly to system restarts.
 - `freshenmac/mas.py`: Updates Mac App Store apps using `mas`. Checks for running apps with `util.is_app_running` so it
   does not interrupt your work, deferring them via `StartupRun` without triggering false reboots.
 - `freshenmac/softwareupdate.py`: Downloads and installs Apple software and macOS updates (including Safari and
@@ -291,10 +291,8 @@ real computer or change your actual system files.
 
 Integration tests replay real CLI outputs captured from macOS systems using `SimRunCMD`:
 
-- `test/fixtures/brew/outdated/20261023-2233/`: Real combined output from `brew outdated --json=v2`.
-- `test/fixtures/brew/outdated/cask/`: Real output from `brew outdated --cask --json=v2`.
-- `test/fixtures/brew/outdated/formula/`: Real output from `brew outdated --formula --json=v2` (verifies pinned vs
-  unpinned packages).
+- `test/fixtures/brew/outdated/20261023-2233/`: Real combined output from `brew outdated --json=v2` (containing both
+  formulae and casks, and verifying pinned vs unpinned packages).
 - `test/fixtures/brew/repository/`: Real output from `brew --repository`.
 - `test/fixtures/brew/cleanup/`: Real output from `brew cleanup --prune=all`.
 

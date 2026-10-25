@@ -83,7 +83,7 @@ class TestHomeBrew(unittest.TestCase):
         ):
 
             # Act: fetch outdated casks
-            casks = brew._get_outdated_casks()
+            casks = brew._get_outdated()['casks']
 
             # Assert: formatted version diff
             self.assertEqual(casks, {'vlc': '3.0.18 ═▷ 3.0.19'})
@@ -120,7 +120,7 @@ class TestHomeBrew(unittest.TestCase):
             self.assertEqual(res, ['cmake_pkg', 'dep_cmake'])
 
     def test_get_outdated_formulae(self):
-        """Verifies _get_outdated_formulae parses brew outdated JSON and excludes pinned packages."""
+        """Verifies _get_outdated parses brew outdated JSON and excludes pinned packages."""
         # Arrange
         brew = HomeBrew(is_arm=True, dry_run=True)
         fake_outdated = json.dumps(
@@ -138,7 +138,7 @@ class TestHomeBrew(unittest.TestCase):
             mock_cmd.return_value.returncode = 0
 
             # Act
-            res = brew._get_outdated_formulae()
+            res = brew._get_outdated()['formulae']
 
             # Assert: pinned package excluded, version formatted
             self.assertEqual(res, {'cmake_pkg': '1.0 ═▷ 1.1', 'regular_pkg': '3.0 ═▷ 3.1'})
@@ -180,6 +180,24 @@ class TestHomeBrew(unittest.TestCase):
         for call_args in mock_logger.print_store.call_args_list:
             self.assertEqual(call_args[1].get('component'), 'Homebrew')
 
+    def test_parse_outdated_invalid_keys(self):
+        """Verifies _parse_outdated logs and returns empty list when expected keys are missing."""
+        brew = HomeBrew(is_arm=True, dry_run=True)
+        res = brew._parse_outdated(json.dumps({'unknown': []}))
+        self.assertEqual(res, [])
+
+    def test_read_outdated_error_handling(self):
+        """Verifies _read_outdated returns empty cask and formula lists on command failure or invalid JSON."""
+        brew = HomeBrew(is_arm=True, dry_run=True)
+        with patch('freshenmac.homebrew.RunCMD') as mock_cmd:
+            mock_cmd.return_value.stdout = "invalid json"
+            res = brew._read_outdated()
+            self.assertEqual(res, {'casks': [], 'formulae': []})
+
+            mock_cmd.return_value.stdout = ""
+            res_empty = brew._read_outdated()
+            self.assertEqual(res_empty, {'casks': [], 'formulae': []})
+
     def test_read_outdated_skips_identical_and_newer_versions(self):
         """Verifies _read_outdated filters out identical or newer versions reported by brew."""
         # Arrange
@@ -215,7 +233,7 @@ class TestHomeBrew(unittest.TestCase):
         )
 
         # Act
-        outdated = brew._read_outdated(fake_json)
+        outdated = brew._get_outdated(fake_json)['formulae']
 
         # Assert: only genuinely outdated packages included
         self.assertNotIn('llvm@22', outdated)
@@ -665,7 +683,7 @@ class TestHomeBrew(unittest.TestCase):
         ), patch.object(
             brew, '_recover_rebase', return_value=True,
         ) as mock_recover, patch.object(
-            brew, '_get_outdated_formulae', return_value={},
+            brew, '_get_outdated', return_value={'casks': {}, 'formulae': {}},
         ):
 
             # Act

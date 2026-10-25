@@ -13,7 +13,7 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261021
+FILE_BUILD = 20261024
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(
@@ -113,47 +113,22 @@ class HomeBrew:
             self.logger.printf(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
         return cmake_list
 
-    def _get_outdated_casks(self) -> dict[str, str]:
-        """Returns outdated casks."""
-        cmd = RunCMD([str(self.brew_path), 'outdated', '--cask', '--json=v2'], **self.debug_vars)
-        if not cmd or not cmd.stdout.strip():
-            return {}
+    def _get_outdated(
+        self,
+        list_data: list[dict[str, Any]] | str | dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, str]]:
+        """Returns formatted outdated packages mapping. Coordinates read and parse if no data passed."""
+        if list_data is None:
+            list_data = self._parse_outdated(self._read_outdated())
+        elif isinstance(list_data, (str, dict)):
+            list_data = self._parse_outdated(list_data)
 
-        try:
-            return self._read_outdated_casks(cmd.stdout)
-
-        except Exception as err:
-            if self.debug_vars['debug'] > 0:
-                self.logger.printf(f"[Warning] Failed to parse brew outdated casks JSON: {err}")
-            return {}
-
-    def _get_outdated_formulae(self) -> dict[str, str]:
-        """Returns outdated formulae that are not pinned."""
-        cmd = RunCMD([str(self.brew_path), 'outdated', '--formula', '--json=v2'], **self.debug_vars)
-        if not cmd or not cmd.stdout.strip():
-            return {}
-
-        try:
-            return self._read_outdated(cmd.stdout)
-
-        except Exception as err:
-            if self.debug_vars['debug'] > 0:
-                self.logger.printf(f"[Warning] Failed to parse brew outdated JSON: {err}")
-            return {}
-
-    def _read_outdated(self, json_str: str) -> dict[str, str]:
-        data = json.loads(json_str)
-        if self.debug_vars['debug'] > 0:
-            if self.debug_vars['debug'] == 1:
-                self.logger.printf(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
-            else:
-                self.logger.printf(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
-        outdated: dict[str, str] = {}
-        for i in data.get('formulae', []):
-            if i.get('pinned') or 'name' not in i:
+        outdated: dict[str, dict[str, str]] = {'casks': {}, 'formulae': {}}
+        for i in list_data:
+            name = i.get('name', '') or i.get('token', '')
+            if i.get('pinned') or not name:
                 continue
 
-            name = i['name']
             installed_list = i.get('installed_versions', [])
             installed = ', '.join(installed_list)
             current = i.get('current_version', '')
@@ -169,30 +144,46 @@ class HomeBrew:
                     continue
 
             value = f"{installed} ═▷ {current}" if (installed and current) else (current or installed)
-            outdated[name] = value
+            bottle_type = i.get('bottle_type', 'formulae')
+            if bottle_type in outdated:
+                outdated[bottle_type][name] = value
+
         return outdated
 
-    @staticmethod
-    def _read_outdated_casks(json_str: str) -> dict[str, str]:
-        data = json.loads(json_str)
-        outdated: dict[str, str] = {}
-        for i in data.get('casks', []):
-            name = i.get('name', '') or i.get('token', '')
-            if not name:
-                continue
+    def _parse_outdated(self, json_data: str | dict[str, Any]) -> list[dict[str, str]]:
+        """Parses brew outdated JSON data into mappings of outdated formulae and casks."""
+        expected_keys = ['casks', 'formulae']
+        data = json.loads(json_data) if isinstance(json_data, str) else json_data
+        if self.debug_vars['debug'] > 0:
+            if self.debug_vars['debug'] == 1:
+                self.logger.printf(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
+            else:
+                self.logger.printf(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
 
-            installed_list = i.get('installed_versions', [])
-            installed = ', '.join(installed_list)
-            current = i.get('current_version', '')
-            if installed_list and current:
-                latest_installed = max(parse_version(v) for v in installed_list)
-                current_ver = parse_version(current)
-                if latest_installed >= current_ver:
-                    continue
+        if expected_keys[0] not in data and expected_keys[1] not in data:
+            self.log(f"Brew outdated did not contain either key: {expected_keys}.  Got: {data.keys()}")
+            return []
 
-            value = f"{installed} ═▷ {current}" if (installed and current) else (current or installed)
-            outdated[name] = value
-        return outdated
+        useful_list = []
+        for bottle_type, bottle_info in data.items():
+            if bottle_type in expected_keys and isinstance(bottle_info, list):
+                for a_bottle in bottle_info:
+                    a_bottle['bottle_type'] = bottle_type
+                    useful_list.append(a_bottle)
+        return useful_list
+
+    def _read_outdated(self) -> dict[str, list[dict[str, Any]]]:
+        """Returns raw JSON dictionary with 'formulae' and 'casks' from brew outdated."""
+        cmd = RunCMD([str(self.brew_path), 'outdated', '--json=v2'], **self.debug_vars)
+        if not cmd or not cmd.stdout.strip():
+            return {'casks': [], 'formulae': []}
+
+        try:
+            return json.loads(cmd.stdout)
+        except Exception as err:
+            if self.debug_vars['debug'] > 0:
+                self.logger.printf(f"[Warning] Failed to parse brew outdated JSON: {err}")
+            return {'casks': [], 'formulae': []}
 
     def _recover_rebase(self) -> bool:
         """
@@ -523,9 +514,9 @@ class HomeBrew:
     def cmd_options(self, update_options: dict | None = None) -> dict[str, Any]:
         """Common options dictionary for long-running system/app updates under utility QoS."""
         options = {
-            'cancelable':  True,
-            'taskpolicy':  'utility',
-            'timeout':     self.timeout,
+            'cancelable': True,
+            'taskpolicy': 'utility',
+            'timeout':    self.timeout,
             **self.debug_vars,
         }
         if update_options:
@@ -585,14 +576,13 @@ class HomeBrew:
                 self.log("[Warning] Rebase self-healing did not find any stranded locks.")
 
         # 2. Check for outdated formulae and casks
-        outdated_formulae = self._get_outdated_formulae()
-        outdated_casks = self._get_outdated_casks()
-        cmake_formulae = self._get_cmake_formulae(outdated_formulae) if outdated_formulae else []
+        outdated = self._get_outdated()
+        cmake_formulae = self._get_cmake_formulae(outdated['formulae']) if outdated['formulae'] else []
         # # TODO: Only update Major and Minor versions of formulae that use cmake (unless something needs the Micro)
         if cmake_formulae:
-            self._upgrade_cmake_formulae(cmake_formulae, outdated_formulae)
+            self._upgrade_cmake_formulae(cmake_formulae, outdated['formulae'])
 
-        remaining_formulae = {k: v for k, v in outdated_formulae.items() if k not in cmake_formulae}
+        remaining_formulae = {k: v for k, v in outdated['formulae'].items() if k not in cmake_formulae}
         if remaining_formulae:
             self.log(
                 f"Found {len(remaining_formulae)} remaining formula{'e' if len(remaining_formulae) != 1 else ''} "
@@ -605,15 +595,15 @@ class HomeBrew:
         elif not cmake_formulae:
             self.log("All Homebrew formulae are up to date.")
 
-        if outdated_casks:
+        if outdated['casks']:
             self.log(
-                f"Found {len(outdated_casks)} outdated Homebrew cask{'s' if len(outdated_casks) != 1 else ''} "
+                f"Found {len(outdated['casks'])} outdated Homebrew cask{'s' if len(outdated['casks']) != 1 else ''} "
                 "(upgrading individually):",
             )
-            for c_name, ver in outdated_casks.items():
+            for c_name, ver in outdated['casks'].items():
                 ver_str = f" ({ver})" if ver else ""
                 self.logger.printf(f"  • {c_name}{ver_str}")
-            self._upgrade_casks(outdated_casks)
+            self._upgrade_casks(outdated['casks'])
         else:
             self.log("All Homebrew casks are up to date.")
 

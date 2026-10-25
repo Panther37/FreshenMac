@@ -2,14 +2,13 @@
   "cmd_args": [
     "brew",
     "outdated",
-    "--formula",
     "--json=v2"
   ],
-  "cmd_str": "brew outdated --formula --json=v2",
+  "cmd_str": "brew outdated --json=v2",
   "need_root": false,
   "need_shell": false,
   "returncode": 0,
-  "run_time": 1,
+  "run_time": 4,
   "stderr": "See stderr.txt",
   "stdout": "See stdout.txt"
 }
