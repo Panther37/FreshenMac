@@ -1,1 +1,0 @@
-'{\n  "formulae": [],\n  "casks": [\n    {\n      "name": "fuse-t",\n      "installed_versions": [\n        "1.2.7"\n      ],\n      "current_version": "1.2.9",\n      "pinned": false,\n      "pinned_version": null\n    }\n  ]\n}\n'
