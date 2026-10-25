@@ -13,7 +13,7 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261017
+FILE_BUILD = 20261021
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(

@@ -16,8 +16,7 @@ class TestTopLevelFunctions(unittest.TestCase):
     """
     Unit tests for top-level entry point and CLI argument parsing.
 
-    Tests main() execution paths, sudo credential priming, argument parsing flags,
-    and update workflow routing.
+    Tests main() execution paths, sudo credential priming, argument parsing flags, and update workflow routing.
     """
 
     def setUp(self):
@@ -297,7 +296,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         ) as mock_mac_cls, patch(
             'freshenmac.plist.check_plist',
         ), patch(
-            'sys.argv', ['freshenmac.py', '-z'],
+            'sys.argv', ['freshenmac.py', '--standalone'],
         ):
             mock_mac = mock_mac_cls.return_value
 
@@ -315,13 +314,13 @@ class TestTopLevelFunctions(unittest.TestCase):
             opts = yield_arguments()
             self.assertEqual(opts.action, 'Install')
 
-        with patch('sys.argv', ['freshenmac.py', '--action', 'update']):
-            opts = yield_arguments()
-            self.assertEqual(opts.action, 'Update')
-
         with patch('sys.argv', ['freshenmac.py', '--action', 'uninstall']):
             opts = yield_arguments()
             self.assertEqual(opts.action, 'Uninstall')
+
+        with patch('sys.argv', ['freshenmac.py', '--action', 'UPDATE']):
+            opts = yield_arguments()
+            self.assertEqual(opts.action, 'Update')
 
     def test_yield_arguments_default(self):
         """Verifies yield_arguments parses default options in interactive and non-interactive sessions."""

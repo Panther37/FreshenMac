@@ -38,10 +38,8 @@ class TestArchitectureAndOrdering(unittest.TestCase):
         },
     }
     PATTERN: dict[str, re.Pattern[str]] = {
-        'noqa': re.compile(
-            r'#\s*noqa:\s*(?P<guide>[A-Z0-9]+(?=_\w)|[A-Z]+(?=\d))_?(?P<code>\w+)',
-            re.IGNORECASE,
-        ),
+        'noqa':        re.compile(r"#\s*noqa:\s*(?P<rule>[\w-]+)", re.IGNORECASE),
+        'guide, code': re.compile(r"(?P<guide>[A-Z]+)(?P<code>[0-9]+)"),
     }
 
     @classmethod
@@ -79,7 +77,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                         keys,
                         expected,
                         f"Dict keys in {const_name} ({filename}:{sub.lineno}) do not match "
-                        f"{noqa_rule[0]}_{noqa_rule[1]} order: {keys} != {expected}",
+                        f"{noqa_rule[0]}-{noqa_rule[1]} order: {keys} != {expected}",
                     )
                 continue
 
@@ -237,8 +235,14 @@ class TestArchitectureAndOrdering(unittest.TestCase):
 
         for idx in range(start, max(start + 1, end)):
             if idx < len(lines) and (match := self.PATTERN['noqa'].search(lines[idx])):
-                guide = match.group('guide').upper()
-                code = match.group('code').upper()
+                rule = match.group('rule').upper()
+                if '-' in rule:
+                    guide, code = rule.split('-', 1)
+                elif code_match := self.PATTERN['guide, code'].search(rule):
+                    guide = code_match.group('guide')
+                    code = code_match.group('code')
+                else:
+                    continue
                 if code in self.FORMATTING_RULES.get(guide, {}):
                     return guide, code
         return None
@@ -375,7 +379,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
             "        pass\n"
             "    def normal_order(self):\n"
             "        pass\n"
-            "SCHEDULE = {  # noqa: P37_SORT_CHRONO\n"
+            "SCHEDULE = {  # noqa: P37-SORT_CHRONO\n"
             "    'Minute': 0,\n"
             "    'Hour': 2,\n"
             "    'Weekday': 0,\n"
