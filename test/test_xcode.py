@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from freshenmac.util import RunCMD
-from freshenmac.xcode import Xcode
+from freshenmac.xcode import PATTERN, Xcode
 
 
 def make_cmd(stdout: str = "", stderr: str = "", errno: int = 0) -> RunCMD:
@@ -254,6 +254,21 @@ class TestXcode(unittest.TestCase):
                 self.assertFalse(xc.is_installed)
                 self.assertIsNone(xc.xcodebuild_path)
                 self.assertTrue(xc.check_and_fix_license())
+
+    def test_pattern_command_line_tools(self):
+        """Verifies PATTERN['Command Line Tools'] extracts package labels from softwareupdate output."""
+        modern_output = "* Label: Command Line Tools for Xcode-16.2\n  Title: Command Line Tools for Xcode"
+        match = PATTERN['Command Line Tools'].search(modern_output)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1).strip(), "Command Line Tools for Xcode-16.2")
+
+        legacy_output = "* Command Line Tools (macOS Sonoma version 14.5) for Xcode-15.3\n"
+        match_legacy = PATTERN['Command Line Tools'].search(legacy_output)
+        self.assertIsNotNone(match_legacy)
+        self.assertEqual(
+            match_legacy.group(1).strip(),
+            "Command Line Tools (macOS Sonoma version 14.5) for Xcode-15.3",
+        )
 
 
 if __name__ == '__main__':

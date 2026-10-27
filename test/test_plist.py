@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 from freshenmac.config import DEFAULTS, PATHS
 from freshenmac.plist import (
+    CronSchedule,
     LaunchAgent,
     PackageSync,
     SavePreferences,
@@ -13,7 +14,6 @@ from freshenmac.plist import (
     file_needs_update,
     get_file_build,
     load_preferences,
-    parse_cron,
 )
 from freshenmac.util import Logger, RunCMD
 
@@ -26,6 +26,101 @@ def make_cmd(stdout: str = "", stderr: str = "", errno: int = 0) -> RunCMD:
     cmd.returncode = errno
     cmd.debug = False
     return cmd
+
+
+class TestCronSchedule(unittest.TestCase):
+    """
+    Unit tests for CronSchedule dataclass.
+
+    Verifies parsing from cron syntax, launchd dictionary formats,
+    Cartesian interval generation, resolution precedence, and helper methods.
+    """
+
+    def test_bool(self):
+        """Verifies __bool__ reflects whether any fields are populated."""
+        self.assertFalse(bool(CronSchedule()))
+        self.assertTrue(bool(CronSchedule.parse("0 6 * * 1")))
+
+    def test_from_cron_help(self):
+        """Verifies from_cron handles 'help' keyword by outputting guidance and returning empty schedule."""
+        with patch('builtins.print') as mock_print:
+            sched = CronSchedule.from_cron("help")
+            self.assertFalse(bool(sched))
+            mock_print.assert_called_once()
+
+    def test_from_cron_invalid(self):
+        """Verifies from_cron raises ValueError when token count is not 5 or tokens are invalid."""
+        with self.assertRaises(ValueError) as ctx:
+            CronSchedule.from_cron("0 6 *")
+        self.assertIn("Expected 5 fields, got 3", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx2:
+            CronSchedule.from_cron("1 2 3 4 5 6")
+        self.assertIn("Expected 5 fields, got 6", str(ctx2.exception))
+
+        with self.assertRaises(ValueError) as ctx3:
+            CronSchedule.from_cron("0 6 abc * 1")
+        self.assertIn("Invalid integer 'abc' for field 'Day'", str(ctx3.exception))
+
+    def test_from_cron_valid_commas(self):
+        """Verifies from_cron parses comma-separated field values into Cartesian intervals."""
+        sched = CronSchedule.from_cron("0 6 1,15 * *")
+        expected = [
+            {'Minute': 0, 'Hour': 6, 'Day': 1},
+            {'Minute': 0, 'Hour': 6, 'Day': 15},
+        ]
+        self.assertEqual(sched.to_launchd(), expected)
+        self.assertEqual(sched.to_cron(), "0 6 1,15 * *")
+        self.assertEqual(len(sched), 2)
+
+    def test_from_cron_valid_single(self):
+        """Verifies from_cron parses standard 5-part cron expressions."""
+        sched = CronSchedule.from_cron("0 6 * * 1")
+        self.assertEqual(sched.to_launchd(), {'Minute': 0, 'Hour': 6, 'Weekday': 1})
+        self.assertEqual(sched.to_cron(), "0 6 * * 1")
+        self.assertEqual(len(sched), 1)
+
+    def test_from_dicts(self):
+        """Verifies from_dicts parses single dictionaries and lists of dictionaries."""
+        d = {'Minute': 0, 'Hour': 6, 'Weekday': 1}
+        sched = CronSchedule.from_dicts(d)
+        self.assertEqual(sched.to_launchd(), d)
+
+        lst = [{'Minute': 0, 'Hour': 6, 'Day': 1}, {'Minute': 0, 'Hour': 6, 'Day': 15}]
+        sched_list = CronSchedule.from_dicts(lst)
+        self.assertEqual(sched_list.to_launchd(), lst)
+
+    def test_parse_and_iter(self):
+        """Verifies parse accepts CronSchedule instances, strings, dicts, and lists, and supports iteration."""
+        sched = CronSchedule.parse("0 6 1,15 * *")
+        intervals = list(sched)
+        self.assertEqual(len(intervals), 2)
+        self.assertEqual(CronSchedule.parse(sched), sched)
+
+        with self.assertRaises(ValueError):
+            CronSchedule.parse("")
+        with self.assertRaises(ValueError):
+            CronSchedule.parse(123)  # type: ignore[arg-type]
+
+    def test_resolve_precedence(self):
+        """Verifies resolve respects explicit arguments, saved preferences, and defaults."""
+        # 1. Explicit argument
+        s1 = CronSchedule.resolve("0 12 * * *")
+        self.assertEqual(s1.to_launchd(), {'Minute': 0, 'Hour': 12})
+        with self.assertRaises(ValueError):
+            CronSchedule.resolve(123)
+
+        # 2. Saved preferences
+        with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
+            s2 = CronSchedule.resolve()
+            self.assertEqual(s2.to_launchd(), {'Minute': 30, 'Hour': 7, 'Weekday': 2})
+
+        # 3. Invalid saved preference logs warning and falls back to DEFAULTS
+        mock_log = MagicMock()
+        with patch('freshenmac.plist.load_preferences', return_value={'schedule': 'invalid cron'}):
+            s3 = CronSchedule.resolve(logger=mock_log)
+            self.assertEqual(s3.to_launchd(), DEFAULTS['schedule'])
+            self.assertTrue(mock_log.print_store.called)
 
 
 class TestFileUpdateHelpers(unittest.TestCase):
@@ -139,7 +234,7 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_build_plist_data(self):
         """Verifies build_plist_data generates valid XML plist bytes matching schedule parameters."""
-        agent = LaunchAgent(hour=8, minute=30, weekday=1)
+        agent = LaunchAgent(schedule={'Hour': 8, 'Minute': 30, 'Weekday': 1})
         with patch('freshenmac.plist.load_preferences', return_value={}):
             data = agent.build_plist_data()
             self.assertIsInstance(data, bytes)
@@ -239,9 +334,9 @@ class TestLaunchAgent(unittest.TestCase):
         """Verifies LaunchAgent default property values and directory destinations."""
         agent = LaunchAgent()
         self.assertEqual(agent.label, DEFAULTS['plist'])
-        self.assertEqual(agent.hour, DEFAULTS['schedule']['Hour'])
-        self.assertEqual(agent.minute, DEFAULTS['schedule']['Minute'])
-        self.assertEqual(agent.weekday, DEFAULTS['schedule']['Weekday'])
+        self.assertEqual(agent.schedule.fields['Hour'], [DEFAULTS['schedule']['Hour']])
+        self.assertEqual(agent.schedule.fields['Minute'], [DEFAULTS['schedule']['Minute']])
+        self.assertEqual(agent.schedule.fields['Weekday'], [DEFAULTS['schedule']['Weekday']])
         self.assertEqual(agent.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(agent.dry_run)
         self.assertEqual(agent.launch_agents_dir, Path('/Library/LaunchAgents'))
@@ -365,61 +460,6 @@ class TestLaunchAgent(unittest.TestCase):
             f"[Dry-run] Would activate launchd service: {agent.label}",
             component='LaunchAgent',
         )
-
-    def test_parse_cron_invalid(self):
-        """Verifies parse_cron raises ValueError with helpful guidance when token count is invalid."""
-        with self.assertRaises(ValueError) as ctx:
-            parse_cron("0 6 *")
-        self.assertIn("Got 3 of 5 expected fields (minute hour day month weekday)", str(ctx.exception))
-        self.assertIn("Example: '0 18 * * 1' (Mondays at 6:00 PM)", str(ctx.exception))
-
-        with self.assertRaises(ValueError) as ctx2:
-            parse_cron("1 2 3 4 5 6")
-        self.assertIn("Got 6 of 5 expected fields (minute hour day month weekday)", str(ctx2.exception))
-
-    def test_parse_cron_ranges(self):
-        """Verifies parse_cron range syntax handling."""
-        self.assertNotEqual(
-            parse_cron("0 6 * * 1-3"), [
-                {'Hour': 6, 'Minute': 0, 'Weekday': 1},
-                {'Hour': 6, 'Minute': 0, 'Weekday': 2},
-                {'Hour': 6, 'Minute': 0, 'Weekday': 3},
-            ],
-        )
-
-    def test_parse_cron_steps(self):
-        """Verifies parse_cron step syntax handling."""
-        self.assertNotEqual(
-            parse_cron("0 */8 * * *"), [
-                {'Hour': 0, 'Minute': 0},
-                {'Hour': 8, 'Minute': 0},
-                {'Hour': 16, 'Minute': 0},
-            ],
-        )
-
-    def test_parse_cron_valid_commas(self):
-        """Verifies parse_cron parses comma-separated day values into list of interval dictionaries."""
-        res = parse_cron("0 6 1,15 * *")
-        expected = [
-            {'Day': 1, 'Hour': 6, 'Minute': 0},
-            {'Day': 15, 'Hour': 6, 'Minute': 0},
-        ]
-        self.assertEqual(res, expected)
-
-    def test_parse_cron_valid_single(self):
-        """Verifies parse_cron parses standard 5-part cron expressions into StartCalendarInterval dictionary."""
-        res = parse_cron("0 6 * * 1")
-        self.assertEqual(res, {'Minute': 0, 'Hour': 6, 'Weekday': 1})
-        res2 = parse_cron("30 18 * * *")
-        self.assertEqual(res2, {'Minute': 30, 'Hour': 18})
-
-    def test_parse_cron_dict_and_list(self):
-        """Verifies parse_cron returns already-parsed dict or list of dicts directly."""
-        d = {'Minute': 0, 'Hour': 6, 'Weekday': 1}
-        self.assertEqual(parse_cron(d), d)
-
-        lst = [{'Minute': 0, 'Hour': 6}, {'Minute': 30, 'Hour': 18}]
-        self.assertEqual(parse_cron(lst), lst)
 
     def test_plist_needs_install(self):
         """Verifies plist_needs_install checks file existence, content matching, ownership, and mode."""

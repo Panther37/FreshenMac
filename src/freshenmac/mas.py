@@ -9,7 +9,7 @@ from typing import Any
 from freshenmac import boot, config, plist, util
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261017
+FILE_BUILD = 20261025
 PATTERN: dict[str, re.Pattern[str]] = {
     'Mas Update': re.compile(r"^\s*(?P<id>\d+)\s+(?P<name>.+?)\s+(?P<vers>\([^)]+\))"),
 }
@@ -197,7 +197,7 @@ class AppStore:
                     self.summary['updated'][app_name] = version_info or 'updated'
                     self.log.store(f"Successfully updated {app_name} ({app_id})", comp)
                     if 'xcode' in app_name.lower() or app_id == '497799835':
-                        Xcode(debug_vars=self.debug_vars, dry_run=self.dry_run).check_and_fix_license()
+                        Xcode(debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log).check_and_fix_license()
                 else:
                     self.summary['unchanged'][app_name] = version_info or 'already up to date'
             except KeyboardInterrupt:

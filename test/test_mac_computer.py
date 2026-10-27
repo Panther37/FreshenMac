@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from freshenmac import util
+from freshenmac import config, util
 from freshenmac.boot import RebootState
 from freshenmac.computer import MacOS
 from freshenmac.homebrew import HomeBrew
@@ -68,7 +68,7 @@ class TestMacOS(unittest.TestCase):
         # Arrange: updates were performed and system uptime is 16 days
         self.mac._updates_performed = True
         with patch.object(
-            MacOS, 'uptime_days', new_callable=PropertyMock, return_value=16,
+            MacOS, 'uptime_days', new_callable=PropertyMock, return_value=config.IDLE_THRESHOLD['Uptime in Days'] + 1,
         ), patch(
             'freshenmac.softwareupdate.SoftwareUpdate.check_staged_reboot', return_value=0,
         ):

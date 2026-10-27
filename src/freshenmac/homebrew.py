@@ -13,7 +13,7 @@ from freshenmac.config import TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261024
+FILE_BUILD = 20261025
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Intel Warning': re.compile(
@@ -65,7 +65,7 @@ class HomeBrew:
         self.timeout = timeout
         self.upgrade_timeout = upgrade_timeout
         self.updates_performed = False
-        self.xcode = Xcode(debug_vars=self.debug_vars, dry_run=dry_run)
+        self.xcode = Xcode(debug_vars=self.debug_vars, dry_run=dry_run, logger=self.logger)
         self._configure_environment()
 
     @staticmethod
