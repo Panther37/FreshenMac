@@ -5,10 +5,14 @@ import re
 import shutil
 from functools import cached_property
 from pathlib import Path
+from typing import Any
 
-from freshenmac.util import RunCMD, is_interactive
+from freshenmac.util import Logger, RunCMD, is_interactive
 
-FILE_BUILD = 20261015
+pleasesdfasdfasdfasdfvasdcvasdfasdsdafasdfFILE_BUILD = 20261026
+PATTERN: dict[str, re.Pattern[str]] = {
+    'Command Line Tools': re.compile(r"\*\s*(?:Label:\s*)?([^\n\r*]+Command Line Tools[^\n\r*]*)", re.IGNORECASE),
+}
 
 
 class Xcode:
@@ -17,9 +21,10 @@ class Xcode:
     license agreement acceptance.
     """
 
-    def __init__(self, *, debug_vars: dict[str, int] | None = None, dry_run: bool = False):
+    def __init__(self, *, debug_vars: dict[str, int] | None = None, dry_run: bool = False, logger: Any | None = None):
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
+        self.logger = logger or Logger(dry_run=self.dry_run)
 
     def accept_license(self) -> bool:
         """
@@ -29,15 +34,17 @@ class Xcode:
         if not self.is_installed or not self.xcodebuild_path:
             return True
 
-        print("\n[Xcode License Required] The Xcode license agreement has not been accepted.")
+        self.log('[License Required] The Xcode license agreement has not been accepted.')
         if self.dry_run:
-            print(f"[Dry-run] Would accept Xcode license agreement via 'sudo {self.xcodebuild_path} -license accept'.")
+            self.logger.printf(
+                f"[Dry-run] Would accept Xcode license agreement via 'sudo {self.xcodebuild_path} -license accept'.",
+            )
             return False
 
         xcode_license_cmd = [str(self.xcodebuild_path), '-license', 'accept']
         if is_interactive():
-            print("CMake and Darwin SDK builds will fail until the Xcode license is accepted.")
-            print("Prompting for administrator privileges to accept the license...")
+            self.log('CMake and Darwin SDK builds will fail until the Xcode license is accepted.')
+            self.logger.printf('Prompting for administrator privileges to accept the license...')
             license_cmd = RunCMD(
                 xcode_license_cmd,
                 120,
@@ -46,7 +53,7 @@ class Xcode:
                 **self.debug_vars,
             )
             if license_cmd:
-                print("Xcode license agreement accepted successfully.")
+                self.log('Xcode license agreement accepted successfully.')
                 return True
         else:
             license_cmd = RunCMD(
@@ -56,10 +63,10 @@ class Xcode:
                 **self.debug_vars,
             )
             if license_cmd:
-                print("Xcode license agreement accepted successfully via sudo.")
+                self.log('Xcode license agreement accepted successfully via sudo.')
                 return True
 
-        print(
+        self.log(
             f'''
 [WARNING] Xcode license agreement has not been accepted.
 Builds requiring macOS SDKs (e.g. formulae with 'cmake') will fail.
@@ -97,19 +104,19 @@ To accept manually, run in Terminal:
         if self.is_clt_installed or self.is_installed:
             return True
 
-        print("\n[Xcode Command Line Tools Required] Command Line Tools are not installed.")
+        self.log('\n[Xcode Command Line Tools Required] Command Line Tools are not installed.')
         if self.dry_run:
-            print("[Dry-run] Would trigger Command Line Tools installation.")
+            self.logger.printf('[Dry-run] Would trigger Command Line Tools installation.')
             return False
 
         if is_interactive():
             return self.install_clt_interactive()
 
         if RunCMD.can_sudo() or os.geteuid() == 0:
-            print("[Xcode CLT] Running in unattended mode with administrator access.  Attempting silent install...")
+            self.log('[Xcode CLT] Running in unattended mode with administrator access.  Attempting silent install...')
             return self.install_clt_headless()
 
-        print(
+        self.log(
             '''
 [ERROR] Xcode Command Line Tools are not installed and unattended credentials are unavailable.
 To install manually, run in Terminal:
@@ -127,28 +134,25 @@ To install manually, run in Terminal:
         flag_file = Path('/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress')
         try:
             flag_file.touch()
-            print("[Xcode CLT] Searching for Command Line Tools package via softwareupdate...")
+            self.logger.printf("[Xcode CLT] Searching for Command Line Tools package via softwareupdate...")
             sw_list = RunCMD(['softwareupdate', '-l'], timeout=180, **self.debug_vars)
 
             clt_label = None
             if sw_list and sw_list.std_all:
                 for line in sw_list.splitlines():
                     if 'command line tools' in line.lower():
-                        match = re.search(r"\*\s*(?:Label:\s*)?([^\n\r*]+Command Line Tools[^\n\r*]*)", line, re.IGNORECASE)
-                        if match:
+                        if match := PATTERN['Command Line Tools'].search(line):
                             clt_label = match.group(1).strip()
                             break
 
-                if not clt_label:
-                    match = re.search(r"\*\s*(?:Label:\s*)?([^\n\r*]+Command Line Tools[^\n\r*]*)", sw_list.std_all, re.IGNORECASE)
-                    if match:
-                        clt_label = match.group(1).strip()
+                if not clt_label and (match := PATTERN['Command Line Tools'].search(sw_list.std_all)):
+                    clt_label = match.group(1).strip()
 
             if not clt_label:
-                print("[Xcode CLT] No Command Line Tools package found in softwareupdate list.")
+                self.log('[Xcode CLT] No Command Line Tools package found in softwareupdate list.')
                 return False
 
-            print(f"[Xcode CLT] Installing '{clt_label}' silently via softwareupdate...")
+            self.log(f"[Xcode CLT] Installing '{clt_label}' silently via softwareupdate...")
             install_cmd = RunCMD(
                 ['softwareupdate', '-i', clt_label, '--verbose'],
                 timeout=1800,
@@ -159,10 +163,10 @@ To install manually, run in Terminal:
                 clt_dir = Path('/Library/Developer/CommandLineTools')
                 if clt_dir.is_dir():
                     RunCMD(['xcode-select', '-s', str(clt_dir)], need_root=True, **self.debug_vars)
-                print("[Xcode CLT] Command Line Tools installed successfully.")
+                self.log('[Xcode CLT] Command Line Tools installed successfully.')
                 return True
 
-            print(f"[Xcode CLT] Failed to install {clt_label}: {install_cmd.stderr}")
+            self.log(f"[Xcode CLT] Failed to install {clt_label}: {install_cmd.stderr}")
             return False
 
         finally:
@@ -177,11 +181,13 @@ To install manually, run in Terminal:
         Triggers the macOS native GUI installer dialog for Command Line Tools via 'xcode-select --install'.
         :return: True if dialog was triggered or already active, False otherwise.
         """
-        print("Homebrew and source builds (e.g. formulae requiring 'cmake') require a compiler.")
-        print("Triggering macOS developer tools installer dialog ('xcode-select --install')...")
+        self.log(
+            'Homebrew and source builds (e.g. formulae requiring "cmake") require a compiler.\n'
+            'Triggering macOS developer tools installer dialog ("xcode-select --install")...',
+        )
         cmd = RunCMD(['xcode-select', '--install'], **self.debug_vars)
         if cmd:
-            print("Please complete the macOS installation dialog on your screen to proceed.")
+            self.logger.printf('Please complete the macOS installation dialog on your screen to proceed.')
             return True
 
         if 'already installed' in cmd.std_all.lower():
@@ -225,6 +231,9 @@ To install manually, run in Terminal:
             return True
 
         return bool(license_cmd)
+
+    def log(self, a_message: str) -> None:
+        self.logger.print_store(a_message, 'Xcode')
 
     def run_first_launch(self) -> bool:
         """Installs required additional Xcode packages silently via root to avoid post-reboot GUI prompts."""

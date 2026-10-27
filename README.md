@@ -5,7 +5,7 @@ A friendly tool that automatically keeps macOS, Homebrew, and App Store apps upd
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.15-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-291%20passed-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-294%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
@@ -168,7 +168,7 @@ python3 FreshenMac.py --save-prefs "schedule=0 18 * * 1"
 python3 FreshenMac.py --save-prefs "no-mas=iPhoto"
 
 # Skip an App Store app by its numeric ID number
-python3 FreshenMac.py --save-prefs "no-mas=408981381"
+python3 FreshenMac.py --save-prefs no-mas=408981381
 
 # Skip multiple apps at once (separate names or IDs with a space)
 python3 FreshenMac.py --save-prefs "no-mas=Aperture 408981381"
@@ -211,6 +211,7 @@ flowchart TD
 
     subgraph SystemInt["macOS System Integration - plist.py"]
         LaunchAgent["LaunchAgent: Daemon Scheduling & Sudoers"]
+        CronSched["CronSchedule: Calendar Interval Engine"]
         PkgSync["PackageSync: Script File Synchronization"]
         StartupRun["StartupRun: One-Shot Login Recovery"]
         Prefs["Preferences: Plist Read & Write"]
@@ -256,7 +257,7 @@ flowchart TD
       available.
     - `StartupRun`: Creates a one-time login task to finish updating apps that were open during the main run.
     - `SavePreferences` and `load_preferences`: Reads and saves system-wide preferences in `/Library/Preferences/`.
-    - `check_data_format`: Validates schedule data structures (`dict`, `list`) containing launchd interval keys.
+    - `CronSchedule`: Encapsulates calendar intervals and parses 5-part cron syntax or launchd dictionaries into Cartesian intervals.
 - `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
 - `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`) with structured output/error tracking (
   `error_info`), executes AppleScript (`RunAppleScript`), detects active applications (`is_app_running`), handles safe
@@ -267,7 +268,7 @@ flowchart TD
 
 ## Running Tests
 
-FreshenMac has 291 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**). 
+FreshenMac has 294 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**). 
 These tests verify that everything works correctly and that code follows strict project rules (like keeping classes, 
 methods, constants, and imports in alphabetical order):
 

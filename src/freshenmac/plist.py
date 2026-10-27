@@ -1,23 +1,153 @@
 from __future__ import annotations
 
+import itertools
 import json
 import plistlib
 import re
 import sys
+from dataclasses import dataclass, field
 from functools import cached_property
 from os import getuid
 from pathlib import Path
 from shutil import copy2
-from typing import Any
+from typing import Any, ClassVar
 
 from freshenmac import config
 from freshenmac.util import Logger, PrivilegedCMD, RunCMD
 
-FILE_BUILD = 20261022
+FILE_BUILD = 20261025
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
 }
+
+
+@dataclass
+class CronSchedule:
+    """
+    Encapsulates LaunchAgent calendar schedule intervals.
+    Internally stores fields as dict[str, list[int]] mapping each dimension to a list of matching integers.
+    """
+    KEYS: ClassVar = ('Minute', 'Hour', 'Day', 'Month', 'Weekday')
+    # lambda to make sure they all have different blank lists
+    fields: dict[str, list[int]] = field(default_factory=lambda: {k: [] for k in CronSchedule.KEYS})
+
+    def __bool__(self) -> bool:
+        return any(self.fields.values())
+
+    def __iter__(self):
+        return iter(self.intervals)
+
+    def __len__(self) -> int:
+        return len(self.intervals)
+
+    @classmethod
+    def from_cron(cls, expr: str) -> CronSchedule:
+        """Parses a 5-part cron string into a CronSchedule."""
+        values = expr.split()
+        if len(values) != 5:
+            if expr.strip().lower() == 'help':
+                print(cls.help())
+                return cls()
+
+            raise ValueError(
+                f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields, got {len(values)}.\n{cls.help()}",
+            )
+
+        def parse_part(val: str, field_name: str) -> list[int]:
+            if val == '*':
+                return []
+            res: set[int] = set()
+            for x in val.split(','):
+                part = x.strip()
+                if not part.isdigit():
+                    raise ValueError(
+                        f"Invalid integer '{part}' for field '{field_name}' in cron expression: '{expr}'.\n{cls.help()}",
+                    )
+                res.add(int(part))
+            return sorted(res)
+
+        return cls(fields={k: parse_part(v, k) for k, v in zip(cls.KEYS, values)})
+
+    @classmethod
+    def from_dicts(cls, data: dict[str, Any] | list[dict[str, Any]]) -> CronSchedule:
+        """Normalizes a launchd dict or list of dicts into a CronSchedule."""
+        raw_fields: dict[str, set[int]] = {k: set() for k in cls.KEYS}
+        for a_dict in ([data] if isinstance(data, dict) else data):
+            for k in a_dict.keys() & cls.KEYS:  # Intersection of input keys and all allowed keys
+                val = a_dict[k]
+                if isinstance(val, (list, tuple, set)):
+                    raw_fields[k].update(int(x) for x in val if str(x).isdigit())
+                elif str(val).isdigit():
+                    raw_fields[k].add(int(val))
+        return cls(fields={k: sorted(raw_fields[k]) for k in cls.KEYS})
+
+    @staticmethod
+    def help() -> str:
+        return '\n\t'.join(
+            [
+                '',
+                '─────── Schedule: HELP ───────',
+                '5 expected fields (minute hour day month weekday).',
+                'Example: "0 18 * * 1,4" (Mondays and Thursdays at 6:00 PM)',
+                '──────────────────────────────',
+            ],
+        )
+
+    @property
+    def intervals(self) -> list[dict[str, int]]:
+        """Generates Cartesian product of active schedule fields for launchd."""
+        active = [k for k in self.KEYS if self.fields.get(k)]
+        if not active:
+            return []
+        return [dict(zip(active, combo)) for combo in itertools.product(*(self.fields[k] for k in active))]
+
+    @classmethod
+    def parse(cls, data: str | dict[str, Any] | list[dict[str, Any]] | CronSchedule) -> CronSchedule:
+        """Parses a cron string, launchd dict, or list of dicts into a CronSchedule."""
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str) and data.strip():
+            return cls.from_cron(data)
+        if isinstance(data, (dict, list)):
+            return cls.from_dicts(data)
+        raise ValueError(f"Invalid schedule input:\t'{data}'")
+
+    @classmethod
+    def resolve(cls, a_schedule: Any | None = None, *, logger: Any | None = None) -> CronSchedule:
+        """
+        Resolves schedule with 3-tier precedence:
+        1. Explicit argument (CronSchedule, dict, list of dicts, or cron string)
+        2. Saved preferences (load_preferences()['schedule'])
+        3. Config defaults (config.DEFAULTS['schedule'])
+        """
+        if a_schedule is not None and (not isinstance(a_schedule, str) or a_schedule.strip()):
+            return cls.parse(a_schedule)
+
+        if pref_sched := load_preferences().get('schedule', ''):
+            try:
+                return cls.parse(pref_sched)
+            except Exception as err:
+                log = logger or Logger()
+                log.print_store(
+                    f"[Warning] Invalid schedule in preferences: '{pref_sched}' ({err}).  "
+                    f"Falling back to default: {config.DEFAULTS['schedule']}",
+                    component='Preferences',
+                )
+
+        return cls.from_dicts(config.DEFAULTS['schedule'])
+
+    def to_cron(self) -> str:
+        """Reconstructs a 5-part cron string from the schedule fields."""
+        return ' '.join(
+            ','.join(map(str, vals)) if (vals := self.fields.get(k)) else '*'
+            for k in self.KEYS
+        )
+
+    def to_launchd(self) -> dict[str, int] | list[dict[str, int]]:
+        """Returns single dict if 1 interval, or list of dicts for launchd plist."""
+        inter = self.intervals
+        return inter[0] if len(inter) == 1 else inter
 
 
 class LaunchAgent(PrivilegedCMD):
@@ -32,29 +162,22 @@ class LaunchAgent(PrivilegedCMD):
         *,
         debug_vars: dict[str, int] | None = None,
         dry_run: bool = False,
-        hour: int | None = None,
         launch_agents_dir: Path = Path('/Library/LaunchAgents'),
         log_dir: Path = Path('/Library/Logs'),
         logger: Any | None = None,
-        minute: int | None = None,
         package_sync: Any | None = None,
         run_at_load: bool = False,
-        schedule_dict: dict | list[dict] | None = None,
+        schedule: Any | None = None,
         target_script: Path = config.PATHS['Script']['Target'],
-        weekday: int | None = None,
     ) -> None:
-        default_schedule = config.DEFAULTS.get('schedule', {})
         self._target_plist: Path | None = None
-        self.cron_schedule = schedule_dict
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
-        self.hour = default_schedule.get('Hour', 2) if hour is None else hour
         self.label = label
         self.launch_agents_dir = launch_agents_dir
         self.log = logger or Logger(dry_run=self.dry_run)
         self.log_dir = log_dir
         self.logger = self.log
-        self.minute = default_schedule.get('Minute', 0) if minute is None else minute
         self.package_sync = package_sync or PackageSync(
             debug_vars=self.debug_vars,
             dry_run=self.dry_run,
@@ -62,14 +185,8 @@ class LaunchAgent(PrivilegedCMD):
             target_script=target_script,
         )
         self.run_at_load = run_at_load
+        self.schedule = CronSchedule.resolve(schedule, logger=self.log)
         self.sudoers = f"/etc/sudoers.d/{config.APP_INFO['Name'].lower()}"
-        self.weekday = default_schedule.get('Weekday', 0) if weekday is None else weekday
-        if self.cron_schedule is None:
-            self.cron_schedule = {
-                'Hour':    self.hour,
-                'Minute':  self.minute,
-                'Weekday': self.weekday,
-            }
 
     def _init_log_files(self) -> None:
         """Ensures stdout and stderr log files exist in log_dir with write permissions."""
@@ -197,24 +314,6 @@ class LaunchAgent(PrivilegedCMD):
 
     def build_plist_data(self) -> bytes:
         """Builds the binary plist representation for the launchd agent."""
-        schedule_cron = load_preferences().get('schedule', '')
-        if schedule_cron:
-            try:
-                self.cron_schedule = parse_cron(schedule_cron)
-            except ValueError as err_val:
-                self.log.print_store(f"[Error] Invalid schedule: {err_val}", component='Preferences')
-            except Exception as err_other:
-                self.log.print_store(
-                    f"[Error] Parsing schedule ({type(schedule_cron)}): {schedule_cron}\n : {err_other}",
-                    component='Preferences',
-                )
-        if (
-            not self.cron_schedule
-            or
-            not check_data_format(self.cron_schedule, ['Minute', 'Hour', 'Day', 'Month', 'Weekday'], [dict, list])
-        ):
-            return b'[Error] Invalid cron'
-
         session_types = ['Aqua', 'Standard']
         if not self.run_at_load:
             session_types += ['Background', 'LoginWindow']
@@ -232,7 +331,7 @@ class LaunchAgent(PrivilegedCMD):
         if self.run_at_load:
             plist_dict['RunAtLoad'] = True
         else:
-            plist_dict['StartCalendarInterval'] = self.cron_schedule or config.DEFAULTS['schedule']
+            plist_dict['StartCalendarInterval'] = self.schedule.to_launchd()
         return plistlib.dumps(plist_dict)
 
     def check_and_install(self) -> bool:
@@ -645,9 +744,13 @@ class SavePreferences(PrivilegedCMD):
             if self.SCHEMA[key]['type'] == 'list':
                 items = value.split() if isinstance(value, str) else [str(x) for x in value]
                 result[key] = list(dict.fromkeys(x.strip().lower() for x in items if x.strip()))
-            elif self.SCHEMA[key]['type'] == 'cron' and not isinstance(value, dict):
+            elif self.SCHEMA[key]['type'] == 'cron':
                 try:
-                    result[key] = parse_cron(str(value))
+                    if isinstance(value, str) and value.lower() == 'help':
+                        self.log.printf(CronSchedule.help())
+                        return None
+
+                    result[key] = CronSchedule.parse(value).to_launchd()
                 except ValueError as err:
                     self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
                     self._parse_error = True
@@ -802,19 +905,6 @@ class StartupRun:
         self.agent.target_plist = val
 
 
-def check_data_format(some_data: Any, contains_expected: list, allowed_types: list[type] | type) -> bool:
-    if isinstance(allowed_types, type):
-        allowed_types = [allowed_types]
-    if isinstance(some_data, tuple(allowed_types)):
-        # Fuzzy check for correct input
-        check_val = str(some_data)
-        for i in contains_expected:
-            if i in check_val:
-                return True
-
-    return False
-
-
 def check_plist(
     a_plist: str = config.DEFAULTS['plist'],
     cron_dict: dict | list[dict] = config.DEFAULTS['schedule'],
@@ -829,7 +919,7 @@ def check_plist(
         debug_vars=debug_vars,
         dry_run=dry_run,
         logger=logger,
-        schedule_dict=cron_dict,
+        schedule=cron_dict,
     ).check_and_install()
 
 
@@ -870,54 +960,6 @@ def load_preferences() -> dict[str, Any]:
                     component='Preferences',
                 )
     return prefs
-
-
-def parse_cron(expr: str | dict[str, int] | list[dict[str, int]]) -> dict[str, int] | list[dict[str, int]]:
-    """Converts a 5-part cron expression into a launchd interval dict (or list of dicts)."""
-    keys = ['Minute', 'Hour', 'Day', 'Month', 'Weekday']
-    if check_data_format(expr, keys, [dict, list]):
-        return expr
-
-    def star_int(a_val: str) -> int | list[int] | None:
-        if ',' in a_val:
-            return [int(x) for x in a_val.split(',')]
-
-        return int(a_val) if a_val.isdigit() else None
-
-    values = expr.split()
-    if len(values) != 5:
-        raise ValueError(
-            f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields "
-            f"Got {len(values)} of 5 expected fields (minute hour day month weekday).\n"
-            "\tExample: '0 18 * * 1' (Mondays at 6:00 PM)",
-        )
-
-    values = [star_int(x) for x in values]
-
-    cron_dict = {k: v for k, v in zip(keys, values) if v is not None}
-    if not any(isinstance(v, list) for v in cron_dict.values()):
-        return cron_dict
-
-    # Multiple values, make a list of dicts for each combination
-    list_len = 1
-    for v in cron_dict.values():
-        if isinstance(v, list):
-            list_len *= len(v)
-    cron_list = [dict.fromkeys(cron_dict.keys(), 0) for _ in range(list_len)]
-    multi_dict = {}
-    for k, v in cron_dict.items():
-        if isinstance(v, int):
-            for i in range(list_len):
-                cron_list[i][k] = v
-        else:
-            multi_dict[k] = v
-    stride = list_len
-    for k, v in multi_dict.items():
-        stride //= len(v)
-        for i, val in enumerate(v):
-            for j in range(stride):
-                cron_list[i * stride + j][k] = val
-    return cron_list
 
 
 def write_file(a_path: Path, data: bytes, mode: int = 0o644) -> None:

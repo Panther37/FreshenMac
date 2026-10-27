@@ -243,8 +243,10 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                     code = code_match.group('code')
                 else:
                     continue
+
                 if code in self.FORMATTING_RULES.get(guide, {}):
                     return guide, code
+
         return None
 
     @staticmethod
@@ -262,6 +264,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                 ],
             ):
                 return True
+
         return False
 
     def test_class_definitions_alphabetical_order(self):

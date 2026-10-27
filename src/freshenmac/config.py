@@ -11,7 +11,7 @@ APP_INFO: dict[str, str] = {
     'Description': 'Updates macOS operating system, App store, and homebrew',
     'Email':       'matt@panther37.com',
     'Name':        'FreshenMac',
-    'Version':     '1.4.1',
+    'Version':     '1.4.2',
 }
 
 # Debug & Execution Limits
@@ -27,13 +27,13 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Module build number
-FILE_BUILD = 20261025
+FILE_BUILD = 20261026
 
 # Idle Thresholds (seconds)
 IDLE_THRESHOLD: dict[str, int] = {
     'Minutes':        60,
     'Reboot Wait':    120,
-    'Uptime in Days': 15,
+    'Uptime in Days': 30,
 }
 IDLE_THRESHOLD['Seconds'] = IDLE_THRESHOLD['Minutes'] * 60
 
