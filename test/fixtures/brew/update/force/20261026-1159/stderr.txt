@@ -1,0 +1,127 @@
+==> Updating Homebrew...
+==> Updated Homebrew from 7.0.9 (7a056ffd71) to 7.0.11 (c6069d2a94).
+Updated 3 taps (defenseunicorns/tap, homebrew/core and homebrew/cask).
+==> New Formulae
+annotsv: Annotation and ranking of structural variations
+ascelerate: Command-line tool for the App Store Connect API
+cellpose: Generalist algorithm for cell and nucleus segmentation
+dep-scan: Security and risk audit tool for project dependencies and container images
+erpc: Fault-tolerant RPC proxy with re-org-aware permanent caching
+filmcraft-cli: Headless FilmCraft CLI and MCP server to edit, render and export video projects
+gitea-importer: CLI to migrate repositories from GitHub, GitLab and Gitea into Gitea
+icu4c@79: C/C++ and Java libraries for Unicode and globalization
+kontext: Identity, credentials, and governance for AI agents
+ng-log: C++ library for application-level logging
+slivar: Filter and annotate genetic variants with expressions, for trios and cohorts
+spidermonkey@140: JavaScript-C Engine
+worldmonitor: Command-line client for the World Monitor global intelligence API
+==> New Casks
+airbuild: AI agents that build iOS apps and handle App Store review
+diri: Terminal workspace for running coding agents in parallel
+font-agrave-pro
+keyboop: Keyboard layout switcher with local voice dictation
+magpie: Model gateway for AI coding agents
+peel: App uninstaller and disk space cleaner
+wblock: Ad blocker for Safari
+==> Outdated Formulae
+ada-url
+boost
+brotli
+c-ares
+ca-certificates
+certifi
+coreutils
+docker
+docker-buildx
+freetype
+fx
+gh
+gnupg
+go
+gobject-introspection
+harfbuzz
+hdrhistogram_c
+icu4c@78
+imagemagick
+lemon
+libheif
+libomp
+libslirp
+libunistring
+libx11
+libxrender
+llvm
+merve
+node
+nss
+openssl@3
+openssl@4
+pkgconf
+portable-ruby
+python-gdbm@3.14
+python-setuptools
+python-tk@3.14
+python@3.14
+python@3.15
+qt
+qt3d
+qt5compat
+qtbase
+qtcanvaspainter
+qtcharts
+qtconnectivity
+qtdatavis3d
+qtdeclarative
+qtgraphs
+qtgrpc
+qthttpserver
+qtimageformats
+qtlanguageserver
+qtlocation
+qtlottie
+qtmultimedia
+qtnetworkauth
+qtpositioning
+qtquick3d
+qtquick3dphysics
+qtquickeffectmaker
+qtquicktimeline
+qtremoteobjects
+qtscxml
+qtsensors
+qtserialbus
+qtserialport
+qtshadertools
+qtspeech
+qtsvg
+qttasktree
+qttools
+qttranslations
+qtvirtualkeyboard
+qtwebchannel
+qtwebengine
+qtwebsockets
+qtwebview
+ruby
+rust
+simdjson
+simdutf
+sphinx-doc
+sqlite
+vermin
+xcb-proto
+z3
+==> Outdated Casks
+freshenmac
+
+You have 87 outdated formulae and 1 outdated cask installed.
+You can upgrade them with brew upgrade
+or list them with brew outdated.
+Warning: Not automatically tapping zarf-dev/tap to migrate zarf as it is not a
+trusted tap. To complete the migration yourself, run:
+  brew tap zarf-dev/tap
+  brew trust zarf-dev/tap/zarf
+  brew reinstall zarf
+
+The 7.0.11 changelog can be found at:
+  https://github.com/Homebrew/brew/releases/tag/7.0.11

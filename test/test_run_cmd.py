@@ -13,6 +13,7 @@ from freshenmac.util import (
     RunCMD,
     Runner,
     SudoKeepAlive,
+    TortimerCreds,
     Version,
     get_log_file,
     parse_version,
@@ -874,6 +875,76 @@ class TestSudoKeepAlive(unittest.TestCase):
         self.assertTrue(keepalive._thread.is_alive())
         keepalive.stop()
         self.assertIsNone(keepalive._thread)
+
+
+class TestTortimerCreds(unittest.TestCase):
+    """
+    Unit tests for TortimerCreds dataclass, secret masking, and user discovery.
+    """
+
+    def test_get_console_user_dev_console(self):
+        """Verifies get_console_user falls back to /dev/console owner when running as root."""
+        with patch.dict('os.environ', {}, clear=True):
+            with patch('getpass.getuser', return_value='root'):
+                mock_stat = MagicMock(st_uid=501)
+                mock_pw = MagicMock(pw_name='console_human')
+                with patch('os.stat', return_value=mock_stat) as mock_os_stat:
+                    with patch('pwd.getpwuid', return_value=mock_pw) as mock_pwd:
+                        user = TortimerCreds.get_console_user()
+                        self.assertEqual(user, 'console_human')
+                        mock_os_stat.assert_called_with('/dev/console')
+                        mock_pwd.assert_called_with(501)
+
+    def test_get_console_user_dev_console_error(self):
+        """Verifies get_console_user gracefully returns root if /dev/console raises OSError or KeyError."""
+        with patch.dict('os.environ', {}, clear=True):
+            with patch('getpass.getuser', return_value='root'):
+                with patch('os.stat', side_effect=OSError("No such device")):
+                    self.assertEqual(TortimerCreds.get_console_user(), 'root')
+                with patch('os.stat', return_value=MagicMock(st_uid=9999)):
+                    with patch('pwd.getpwuid', side_effect=KeyError("UID not found")):
+                        self.assertEqual(TortimerCreds.get_console_user(), 'root')
+
+    def test_get_console_user_normal(self):
+        """Verifies get_console_user returns getpass.getuser when not root."""
+        with patch.dict('os.environ', {}, clear=True):
+            with patch('getpass.getuser', return_value='standard_user'):
+                self.assertEqual(TortimerCreds.get_console_user(), 'standard_user')
+
+    def test_get_console_user_sudo_user(self):
+        """Verifies get_console_user prefers SUDO_USER environment variable."""
+        with patch.dict('os.environ', {'SUDO_USER': 'sudo_admin'}):
+            self.assertEqual(TortimerCreds.get_console_user(), 'sudo_admin')
+
+    def test_prompt_interactive_password(self):
+        """Verifies prompt primes sudo and captures password in interactive session."""
+        with patch('freshenmac.util.is_interactive', return_value=True):
+            with patch.object(TortimerCreds, 'get_console_user', return_value='admin'):
+                with patch('freshenmac.util.RunCMD') as mock_cmd:
+                    mock_cmd.can_sudo.return_value = False
+                    with patch('sys.stdin.isatty', return_value=True):
+                        with patch('getpass.getpass', return_value='secret123') as mock_getpass:
+                            creds = TortimerCreds.prompt()
+                            self.assertEqual(creds.username, 'admin')
+                            self.assertEqual(creds.password, 'secret123')
+                            mock_getpass.assert_called_once()
+                            mock_cmd.assert_called_with(['sudo', '-v'], interactive=True, timeout=120)
+
+    def test_prompt_non_interactive(self):
+        """Verifies prompt returns None for password when running non-interactively."""
+        with patch('freshenmac.util.is_interactive', return_value=False):
+            with patch.object(TortimerCreds, 'get_console_user', return_value='headless_user'):
+                creds = TortimerCreds.prompt()
+                self.assertEqual(creds.username, 'headless_user')
+                self.assertIsNone(creds.password)
+
+    def test_repr_masks_password(self):
+        """Verifies repr and str representations mask the password to prevent accidental leaks."""
+        creds = TortimerCreds(username='admin', password='super_secret_password')
+        self.assertNotIn('super_secret_password', repr(creds))
+        self.assertNotIn('super_secret_password', str(creds))
+        self.assertEqual(repr(creds), "TortimerCreds(username='admin')")
+        self.assertEqual(str(creds), "TortimerCreds(username='admin')")
 
 
 class TestVersion(unittest.TestCase):

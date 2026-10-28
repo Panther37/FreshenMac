@@ -10,6 +10,7 @@ BREW_FIXTURES_DIR = FIXTURES_DIR / 'brew'
 CLEANUP_FIXTURE = BREW_FIXTURES_DIR / 'cleanup' / '20261012-1426'
 OUTDATED_FIXTURE = BREW_FIXTURES_DIR / 'outdated' / '20261023-2233'
 REPOSITORY_FIXTURE = BREW_FIXTURES_DIR / 'repository' / '20261012-1424'
+UPDATE_FORCE_FIXTURE = BREW_FIXTURES_DIR / 'update' / 'force' / '20261026-1159'
 
 
 class TestFixtures(unittest.TestCase):
@@ -53,12 +54,23 @@ class TestFixtures(unittest.TestCase):
         sim = SimRunCMD.load(REPOSITORY_FIXTURE)
         self.assertEqual(sim.stdout.strip(), '/usr/local/Homebrew')
 
+    def test_brew_update_force_fixture(self):
+        """Verifies HomeBrew update --force fixture captures output, versions, and warnings."""
+        sim = SimRunCMD.load(UPDATE_FORCE_FIXTURE)
+        self.assertEqual(sim.returncode, 0)
+        self.assertEqual(sim.cmd_args, ['brew', 'update', '--force'])
+        self.assertEqual(sim.cmd_str, 'brew update --force')
+        self.assertIn('Updated Homebrew from 7.0.9 (7a056ffd71) to 7.0.11 (c6069d2a94).', sim.stderr)
+        self.assertIn('You have 87 outdated formulae and 1 outdated cask installed.', sim.stderr)
+        self.assertIn('Warning: Not automatically tapping zarf-dev/tap', sim.stderr)
+
     def test_load_all_standard_fixtures(self):
         """Verifies all standard fixtures load successfully through SimRunCMD.load."""
         expected_fixtures = [
             CLEANUP_FIXTURE,
             OUTDATED_FIXTURE,
             REPOSITORY_FIXTURE,
+            UPDATE_FORCE_FIXTURE,
         ]
         for fixture_path in expected_fixtures:
             self.assertTrue(fixture_path.is_dir(), f"Fixture directory missing: {fixture_path}")

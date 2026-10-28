@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import getpass
 import platform
 import re
 import time
@@ -8,14 +7,14 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from freshenmac import config, plist, util
+from freshenmac import config, util
 from freshenmac.boot import Reboot, RebootState
 from freshenmac.homebrew import HomeBrew
 from freshenmac.mas import AppStore
 from freshenmac.softwareupdate import SoftwareUpdate
 from freshenmac.util import Logger, RunCMD
 
-FILE_BUILD = 20261015
+FILE_BUILD = 20261026
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Boot Time': re.compile(r"sec = (?P<epoch>\d+)"),
@@ -46,7 +45,7 @@ class MacOS:
         user_password: str | None = None,
     ) -> None:
         self._updates_performed = False
-        self.console_user = console_user or getpass.getuser()
+        self.console_user = console_user or util.TortimerCreds.get_console_user()
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.log = logger or Logger(dry_run=self.dry_run)
@@ -354,7 +353,7 @@ class MacOS:
             raise ValueError(f"Unknown update target: '{target}'.  Choose from 'brew', 'mas', 'os', or 'all'.")
 
         self.log.store(f"Starting update run (target: {target_clean})", config.APP_INFO['Name'])
-        target_func()
+        target_func()  # noqa  # we can't get here if target_func == None
         self.print_summary()
 
     @property

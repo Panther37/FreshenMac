@@ -1,0 +1,15 @@
+{
+  "cmd_args": [
+    "brew",
+    "update",
+    "--force"
+  ],
+  "cmd_str": "brew update --force",
+  "need_root": false,
+  "need_shell": false,
+  "notes": "Untrusted tap (zarf)",
+  "returncode": 0,
+  "run_time": 10,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}
