@@ -5,7 +5,7 @@ A friendly tool that automatically keeps macOS, Homebrew, and App Store apps upd
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.15-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-294%20passed-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-302%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
@@ -261,14 +261,15 @@ flowchart TD
 - `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
 - `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`) with structured output/error tracking (
   `error_info`), executes AppleScript (`RunAppleScript`), detects active applications (`is_app_running`), handles safe
-  string joining (`str_join`), parses natural version numbers (`Version`), keeps administrator permissions active 
-  (`SudoKeepAlive`), and draws the progress spinner (`Wave`).
+  string joining (`str_join`), parses natural version numbers (`Version`), manages masked user authentication
+  credentials (`TortimerCreds`), keeps administrator permissions active (`SudoKeepAlive`), and draws the progress
+  spinner (`Wave`).
 
 ---
 
 ## Running Tests
 
-FreshenMac has 294 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**). 
+FreshenMac has 302 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**). 
 These tests verify that everything works correctly and that code follows strict project rules (like keeping classes, 
 methods, constants, and imports in alphabetical order):
 

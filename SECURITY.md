@@ -10,8 +10,8 @@ Only the latest active minor release series receives security updates and patche
 
 | Version | Supported          |
 | :------ | :----------------- |
-| `1.0.x` | :white_check_mark: |
-| `< 1.0` | :x:                |
+| `1.5.x` | :white_check_mark: |
+| `< 1.5` | :x:                |
 
 We strongly encourage all users to run the latest version of FreshenMac.
 
@@ -68,7 +68,17 @@ We ask that you give us a reasonable amount of time to address the vulnerability
 
 FreshenMac is built around core design choices intended to minimize attack surfaces:
 
-- **Zero External Dependencies:** FreshenMac runs strictly on the Python 3.9+ standard library. It does not install or depend on third-party `pip` packages, eliminating supply chain compromise vectors.
-- **Upstream Signature Verification:** FreshenMac acts as an orchestrator for official macOS CLI utilities (`softwareupdate`, `fdesetup`, `xcode-select`, `mas`) and Homebrew (`brew`). It relies entirely on native signature verification, checksums, and Apple Gatekeeper rather than downloading third-party binaries directly.
-- **Privilege Scoping:** Privileged commands requiring root execution are clearly delineated. Dedicated sudoers drop-in files (`/etc/sudoers.d/freshenmac`) are validated and cleanly removable via `--uninstall`.
-- **Hermetic Testing:** Automated test suites enforce architecture safety guards, preventing unintended command execution or shutdown actions during development and continuous integration.
+- **Zero External Dependencies:** FreshenMac runs strictly on the Python 3.9+ standard library. It does not install
+  or depend on third-party `pip` packages, eliminating supply chain compromise vectors.
+- **Upstream Signature Verification:** FreshenMac acts as an orchestrator for official macOS CLI utilities
+  (`softwareupdate`, `fdesetup`, `xcode-select`, `mas`) and Homebrew (`brew`). It relies entirely on native signature
+  verification, checksums, and Apple Gatekeeper rather than downloading third-party binaries directly.
+- **Privilege Scoping:** Privileged commands requiring root execution are clearly delineated. Dedicated sudoers drop-in
+  files (`/etc/sudoers.d/freshenmac`) are validated and cleanly removable via `--uninstall`.
+- **Credential Isolation & Secret Masking:** Authentication credentials (`TortimerCreds`) encapsulate administrative
+  credentials. Secret fields are explicitly excluded from string conversions (`repr=False`, random asterisk masking) to
+  prevent secrets from leaking into log files, debug tracebacks, terminal output, or process tables. Privileged
+  authentication sessions are primed via standard `sudo -v` rather than storing or caching plaintext passwords on disk
+  or passing raw password strings across module boundaries.
+- **Hermetic Testing:** Automated test suites enforce architecture safety guards, preventing unintended command
+  execution or shutdown actions during development and continuous integration.

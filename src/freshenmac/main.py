@@ -6,10 +6,7 @@ FreshenMac - A Python script to automate macOS updates
 from __future__ import annotations
 
 import argparse
-import getpass
-import io
 import json
-import os
 import sys
 from time import sleep
 from typing import Any
@@ -17,7 +14,7 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261019
+FILE_BUILD = 20261026
 REBOOT_STR = {
     'Default': ['DEFAULT'],
     'Force':   ['FORCE', 'YES'],
@@ -78,33 +75,15 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
     if options.spinner:
         return spinner_test()
 
-    user_password = None
-    console_user = os.environ.get('SUDO_USER') or getpass.getuser()
-    if console_user == 'root':
-        try:
-            if dev_console_user := util.RunCMD(['stat', '-f', '%Su', '/dev/console']).strip():
-                if dev_console_user != 'root':
-                    console_user = dev_console_user
-        except Exception:
-            pass
-
-    if util.is_interactive():
-        if not util.RunCMD.can_sudo():
-            print("\nAdministrator privileges required for system maintenance.  Priming sudo credentials...")
-            util.RunCMD(['sudo', '-v'], interactive=True, timeout=120)
-        if sys.stdin and hasattr(sys.stdin, 'isatty') and sys.stdin.isatty():
-            try:
-                user_password = getpass.getpass(f"Password for {console_user} (macOS updates / authrestart): ")
-            except (EOFError, io.UnsupportedOperation):
-                user_password = None
+    credentials = util.TortimerCreds.prompt()
 
     with util.SudoKeepAlive():
         if options.debug_vars['debug'] > 1:
-            print(f"Console user: {console_user}")
-            return perform_updates(options, console_user, user_password)
+            print(f"Console user: {credentials.username}")
+            return perform_updates(options, credentials.username, credentials.password)
 
         try:
-            return perform_updates(options, console_user, user_password)
+            return perform_updates(options, credentials.username, credentials.password)
 
         except Exception as err:
             print(err)

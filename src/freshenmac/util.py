@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import getpass
+import io
 import json
 import os
+import pwd
 import re
 import subprocess
 import sys
@@ -20,12 +23,12 @@ from typing import Any, IO
 
 from freshenmac import config
 
-FILE_BUILD = 20261016
+FILE_BUILD = 20261027
 PATTERN = {
     'Word': re.compile(r"\w+"),
 }
 RETURNCODE = {
-    'Failed':  -65,
+    'Failed':  -65,  # noqa E221
     'General': -70,
     'Timeout': -80,
 }
@@ -383,7 +386,7 @@ class RunCMD:
         :param interactive: ``True:`` do not capture stdout/stderr to allow interactive TTY prompts
         :param spinner: ``True (or None and timeout >= 30):`` show a terminal spinner during execution
         :param taskpolicy: Limit command: The lowest priority is 'maintenance', then 'background', and 'utility'.
-        ``None`` is normal and the highest priority for this option.
+          ``None`` is normal and the highest priority for this option.
         :param to_input: String content to pass to standard input (stdin).
         """
         if cancelable is None:
@@ -459,7 +462,7 @@ class RunCMD:
             self.need_root = False
             self.run()
 
-    def _get_output(self, a_subprocess: subprocess):
+    def _get_output(self, a_subprocess: subprocess.CompletedProcess | subprocess.SubprocessError):
         if isinstance(a_subprocess, subprocess.CompletedProcess):
             self.stdout = a_subprocess.stdout or ''
             self.stderr = a_subprocess.stderr or ''
@@ -489,7 +492,8 @@ class RunCMD:
         else:
             return argument + a_cmd
 
-    def _read_bytes(self, some_bytes: bytes):
+    @staticmethod
+    def _read_bytes(some_bytes: bytes | None) -> str:
         """Convert bytes to string, handling potential encoding issues."""
         if isinstance(some_bytes, bytes):
             return some_bytes.decode('utf-8', errors='backslashreplace')
@@ -536,7 +540,7 @@ class RunCMD:
             yield None
             return
 
-        display_cmd = ' '.join(str_join(self.cmd_args, strip=True).split())  # Seems redundand, removes \n
+        display_cmd = ' '.join(str_join(self.cmd_args, strip=True).split())  # Seems redundant, removes \n
         with Wave(display_cmd, direction='right', persist=True) as spinner:
             yield spinner
 
@@ -702,6 +706,51 @@ class SudoKeepAlive(Runner):
                 RunCMD(['sudo', '-n', '-v'])
 
 
+@dataclass
+class TortimerCreds:
+    """
+    Console user identity and masked credentials for FileVault and Volume Ownership.
+    """
+    username: str
+    password: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def get_console_user(cls) -> str:
+        """Returns the active console or sudo username, falling back to /dev/console owner if running as root."""
+        user = os.environ.get('SUDO_USER') or getpass.getuser()
+        if user == 'root':
+            try:
+                console_uid = os.stat('/dev/console').st_uid
+                console_user = pwd.getpwuid(console_uid).pw_name
+                if console_user != 'root':
+                    return console_user
+            except (KeyError, OSError):
+                pass  # We can't get console username
+        return user
+
+    @classmethod
+    def prompt(cls, username: str | None = None) -> TortimerCreds:
+        """
+        Discovers the console user and prompts for password if running in an interactive terminal.
+        Primes sudo credentials via 'sudo -v'.
+        """
+        user = username or cls.get_console_user()
+        password = None
+
+        if is_interactive():
+            if not RunCMD.can_sudo():
+                print("\nAdministrator privileges required for system maintenance.  Priming sudo credentials...")
+                RunCMD(['sudo', '-v'], interactive=True, timeout=120)
+
+            if sys.stdin and hasattr(sys.stdin, 'isatty') and sys.stdin.isatty():
+                try:
+                    password = getpass.getpass(f"Password for {user} (macOS updates / authrestart): ")
+                except (EOFError, io.UnsupportedOperation):
+                    password = None
+
+        return cls(username=user, password=password)
+
+
 @total_ordering
 @dataclass(eq=False)
 class Version:
@@ -713,17 +762,17 @@ class Version:
     raw: str = field(compare=False, default='')
 
     ver_words = {
-        'snapshot': -9,  # Earliest / dev build
-        'nightly':  -9,  # Automated dev build
-        'dev':      -9,  # Explicit dev release
-        'alpha':    -8,  # Early pre-release
-        'a':        -8,  # Alpha alias
-        'beta':     -7,  # Feature-frozen pre-release
-        'b':        -7,  # Beta alias
-        'preview':  -7,  # Public preview / late beta
-        'gamma':    -6,  # Pre-RC stage
-        'pre':      -5,  # Late pre-release
-        'rc':       -4,  # Final candidate before GA
+        'snapshot': -9,  # noqa E221  # Earliest / dev build
+        'nightly':  -9,  # noqa E221  # Automated dev build
+        'dev':      -9,  # noqa E221  # Explicit dev release
+        'alpha':    -8,  # noqa E221  # Early pre-release
+        'a':        -8,  # noqa E221  # Alpha alias
+        'beta':     -7,  # noqa E221  # Feature-frozen pre-release
+        'b':        -7,  # noqa E221  # Beta alias
+        'preview':  -7,  # noqa E221  # Public preview / late beta
+        'gamma':    -6,  # noqa E221  # Pre-RC stage
+        'pre':      -5,  # noqa E221  # Late pre-release
+        'rc':       -4,  # noqa E221  # Final candidate before GA
         'v':        1500,  # 'Version'
         'final':    1510,  # Base stable release
         'omega':    1520,  # Greek alias for final
@@ -921,7 +970,7 @@ class Wave(Runner):
         frame = ' ' * self.WIDTH
         while not self._stop_event.is_set():
             # Make next frame
-            frame = self.direction_function(a_frame=frame, index_num=frame_index)
+            frame = self.direction_function(a_frame=frame, index_num=frame_index)  # noqa  # PyArgumentList
             # Print frame
             self._print_line(f" {frame}  {self.message}")
             frame_index = (frame_index + 1) % num_animation_frames
@@ -957,9 +1006,9 @@ def get_log_file() -> Path:
     return user_log
 
 
-def is_app_running(app_name: str, debug_vars: dict = {}) -> bool:
+def is_app_running(app_name: str, debug_vars: dict | None = None) -> bool:
     """Checks if an application is currently running on the system."""
-
+    debug_vars = debug_vars or {}
     if RunCMD(['pgrep', '-f', f"{app_name}.app"], **debug_vars):
         return True
 
@@ -987,7 +1036,7 @@ def parse_version(version: Any) -> Version:
 
 
 def str_join(
-    a_list: any,
+    a_list: Any,
     joiner: str = ' ',
     *,
     skip_none: bool = False,

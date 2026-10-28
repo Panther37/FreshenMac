@@ -8,19 +8,32 @@ Please wrap at 120 characters.
 
 ## [Unreleased] - `main`
 
+## [1.5.0] - 2026-10-27
+
+### Added
+- Added `TortimerCreds` dataclass in `src/freshenmac/util.py` to encapsulate administrative credentials, securely
+  discover the console user via `os.stat`/`pwd.getpwuid`, and mask secrets in string representations (`repr=False`,
+  resolves [#20]).
+- Added real Homebrew forced update test fixture under `test/fixtures/brew/update/force/20261026-1159/` and integration
+  tests in `test/test_fixtures.py`.
+
+### Changed
+- Adopted `TortimerCreds` in `src/freshenmac/main.py` and `src/freshenmac/computer.py` for FileVault and Volume
+  Ownership credential resolution ([#20]).
+
 ## [1.4.2] - 2026-10-26
 
 ### Added
 - Added `CronSchedule` dataclass in `src/freshenmac/plist.py` to parse 5-part cron syntax and launchd dictionaries
-  into Cartesian calendar intervals.
+  into Cartesian calendar intervals ([#21]).
 
 ### Changed
 - Centralized Xcode Command Line Tools regex parsing into module-level `PATTERN['Command Line Tools']` in
-  `src/freshenmac/xcode.py` ([#10]).
+  `src/freshenmac/xcode.py` ([#21], resolves [#10]).
 - Increased default reboot suggestion uptime threshold (`IDLE_THRESHOLD['Uptime in Days']`) from 15 to 30 days in
-  `src/freshenmac/config.py`.
+  `src/freshenmac/config.py` ([#21]).
 - Standardized logger injection into `Xcode` instances across `src/freshenmac/homebrew.py` and
-  `src/freshenmac/mas.py`.
+  `src/freshenmac/mas.py` ([#21]).
 
 ## [1.4.1] - 2026-10-25
 
@@ -81,7 +94,8 @@ Please wrap at 120 characters.
 ### Added
 - Initial release.
 
-[Unreleased]: https://github.com/Panther37/FreshenMac/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/Panther37/FreshenMac/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Panther37/FreshenMac/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/Panther37/FreshenMac/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/Panther37/FreshenMac/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Panther37/FreshenMac/compare/v1.3.0...v1.4.0
@@ -90,6 +104,8 @@ Please wrap at 120 characters.
 [1.1.1]: https://github.com/Panther37/FreshenMac/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Panther37/FreshenMac/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Panther37/FreshenMac/releases/tag/v1.0.0
+[#21]: https://github.com/Panther37/FreshenMac/pull/21
+[#20]: https://github.com/Panther37/FreshenMac/issues/20
 [#18]: https://github.com/Panther37/FreshenMac/pull/18
 [#17]: https://github.com/Panther37/FreshenMac/issues/17
 [#16]: https://github.com/Panther37/FreshenMac/pull/16

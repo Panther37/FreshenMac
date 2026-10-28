@@ -1,1 +1,0 @@
-'Warning: Skipping gobject-introspection: most recent version 1.86.0_4 not installed\nWarning: Skipping harfbuzz: most recent version 14.6.0 not installed\nWarning: Skipping simdjson: most recent version 5.0.4 not installed\n'
