@@ -1,0 +1,8 @@
+{
+  "no-mas": "Slack 803453959 FinalCutPro",
+  "schedule": "15 23 * * 1,4",
+  "staged_dirs": [],
+  "staged_expected": 0,
+  "target_script": "/opt/homebrew/bin/freshenmac",
+  "user_home": "/Users/bob"
+}

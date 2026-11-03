@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>InstallAtLogout</key>
+	<array>
+		<string>999-00000</string>
+	</array>
+	<key>InstallLater</key>
+	<array>
+		<string>001-12345</string>
+	</array>
+	<key>ProductPaths</key>
+	<dict>
+		<key>002-67890</key>
+		<string>/Library/Updates/002-67890/macOSUpd15.2.pkg</string>
+	</dict>
+</dict>
+</plist>

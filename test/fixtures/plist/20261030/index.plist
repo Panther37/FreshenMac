@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>InstallAtLogout</key>
+	<array>
+		<string>071-12345</string>
+		<string>071-67890</string>
+	</array>
+	<key>InstallLater</key>
+	<array>
+		<string>062-54321</string>
+		<string>062-98765</string>
+	</array>
+	<key>ProductPaths</key>
+	<dict>
+		<key>062-54321</key>
+		<string>/Library/Updates/062-54321/macOSUpd15.8.1.pkg</string>
+		<key>071-12345</key>
+		<string>/Library/Updates/071-12345/Safari18.2.pkg</string>
+	</dict>
+</dict>
+</plist>

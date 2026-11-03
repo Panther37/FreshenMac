@@ -1,0 +1,63 @@
+{
+  "com.panther37.FreshenMac.plist": {
+    "no-mas": [
+      "1447605203"
+    ],
+    "schedule": {
+      "Hour": 2,
+      "Minute": 0,
+      "Weekday": 0
+    }
+  },
+  "com.panther37.FreshenMac_runonce.plist": {
+    "EnvironmentVariables": {
+      "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    },
+    "Label": "com.panther37.FreshenMac_runonce",
+    "LimitLoadToSessionType": [
+      "Aqua",
+      "Standard"
+    ],
+    "ProgramArguments": [
+      "/usr/local/bin/python3",
+      "/usr/local/bin/freshenmac"
+    ],
+    "RunAtLoad": true,
+    "StandardErrorPath": "/Users/alice/Library/Logs/com.panther37.FreshenMac_runonce.stderr.log",
+    "StandardOutPath": "/Users/alice/Library/Logs/com.panther37.FreshenMac_runonce.stdout.log"
+  },
+  "index.plist": {
+    "InstallAtLogout": [
+      "999-00000"
+    ],
+    "InstallLater": [
+      "001-12345"
+    ],
+    "ProductPaths": {
+      "002-67890": "/Library/Updates/002-67890/macOSUpd15.2.pkg"
+    }
+  },
+  "launch_agent.plist": {
+    "EnvironmentVariables": {
+      "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    },
+    "Label": "com.panther37.FreshenMac",
+    "LimitLoadToSessionType": [
+      "Aqua",
+      "Standard",
+      "Background",
+      "LoginWindow"
+    ],
+    "ProgramArguments": [
+      "/usr/local/bin/python3",
+      "/usr/local/bin/freshenmac"
+    ],
+    "StandardErrorPath": "/Library/Logs/com.panther37.FreshenMac.stderr.log",
+    "StandardOutPath": "/Library/Logs/com.panther37.FreshenMac.stdout.log",
+    "StartCalendarInterval": {
+      "Hour": 2,
+      "Minute": 0,
+      "Weekday": 0
+    }
+  }
+}

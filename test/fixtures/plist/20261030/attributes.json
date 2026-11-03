@@ -1,0 +1,13 @@
+{
+  "no-mas": "408981381 497799835 1447605203 Aperture iPhoto Xcode",
+  "schedule": "0,30 6,18 1,15 3,9 1,4",
+  "staged_dirs": [
+    "062-54321",
+    "062-98765",
+    "071-12345",
+    "071-67890"
+  ],
+  "staged_expected": 4,
+  "target_script": "/opt/homebrew/bin/freshenmac",
+  "user_home": "/Users/example"
+}

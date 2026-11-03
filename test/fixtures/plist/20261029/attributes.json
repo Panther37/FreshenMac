@@ -1,0 +1,11 @@
+{
+  "no-mas": "1447605203",
+  "schedule": "0 2 * * 0",
+  "staged_dirs": [
+    "001-12345",
+    "002-67890"
+  ],
+  "staged_expected": 2,
+  "target_script": "/usr/local/bin/freshenmac",
+  "user_home": "/Users/alice"
+}
