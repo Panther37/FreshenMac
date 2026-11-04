@@ -252,7 +252,7 @@ class TestXcode(unittest.TestCase):
         with patch('freshenmac.xcode.Path.is_file', return_value=False):
             with patch('freshenmac.xcode.shutil.which', return_value=None):
                 self.assertFalse(xc.is_installed)
-                self.assertIsNone(xc.xcodebuild_path)
+                self.assertEqual(xc.xcodebuild_path, Path(''))
                 self.assertTrue(xc.check_and_fix_license())
 
     def test_pattern_command_line_tools(self):

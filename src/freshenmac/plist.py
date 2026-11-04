@@ -3,23 +3,18 @@ from __future__ import annotations
 import itertools
 import json
 import plistlib
-import re
+import pwd
+import shutil
 import sys
 from dataclasses import dataclass, field
 from functools import cached_property
 from os import getuid
 from pathlib import Path
-from shutil import copy2
 from typing import Any, ClassVar
 
-from freshenmac import config
-from freshenmac.util import Logger, PrivilegedCMD, RunCMD
+from freshenmac import config, util
 
-FILE_BUILD = 20261025
-
-PATTERN: dict[str, re.Pattern[str]] = {
-    'File Build': re.compile(r"^FILE_BUILD = (?P<build>(\d+(\.\d+)?))", re.MULTILINE),
-}
+FILE_BUILD = 20261103
 
 
 @dataclass
@@ -41,10 +36,33 @@ class CronSchedule:
     def __len__(self) -> int:
         return len(self.intervals)
 
+    @staticmethod
+    def _parse_part(a_schedule: str, time_unit_name: str) -> list[int]:
+        if a_schedule == '*':
+            return []
+
+        res: set[int] = set()
+        for i in a_schedule.split(','):
+            part = i.strip()
+            if not part.isdigit():
+                raise ValueError(
+                    f"CronSchedule: Invalid integer '{part}' for field '{time_unit_name}'"
+                )
+
+            res.add(int(part))
+
+        if time_unit_name == 'Weekday' and 7 in res:
+            res.discard(7)
+            res.add(0)
+
+        return sorted(res)
+
     @classmethod
     def from_cron(cls, expr: str) -> CronSchedule:
         """Parses a 5-part cron string into a CronSchedule."""
         values = expr.split()
+
+        # Check Length
         if len(values) != 5:
             if expr.strip().lower() == 'help':
                 print(cls.help())
@@ -54,20 +72,8 @@ class CronSchedule:
                 f"Invalid cron expression:\t'{expr}'\n\tExpected 5 fields, got {len(values)}.\n{cls.help()}",
             )
 
-        def parse_part(val: str, field_name: str) -> list[int]:
-            if val == '*':
-                return []
-            res: set[int] = set()
-            for x in val.split(','):
-                part = x.strip()
-                if not part.isdigit():
-                    raise ValueError(
-                        f"Invalid integer '{part}' for field '{field_name}' in cron expression: '{expr}'.\n{cls.help()}",
-                    )
-                res.add(int(part))
-            return sorted(res)
-
-        return cls(fields={k: parse_part(v, k) for k, v in zip(cls.KEYS, values)})
+        # Put it all together
+        return cls(fields={k: cls._parse_part(v, k) for k, v in zip(cls.KEYS, values)})
 
     @classmethod
     def from_dicts(cls, data: dict[str, Any] | list[dict[str, Any]]) -> CronSchedule:
@@ -100,6 +106,7 @@ class CronSchedule:
         active = [k for k in self.KEYS if self.fields.get(k)]
         if not active:
             return []
+
         return [dict(zip(active, combo)) for combo in itertools.product(*(self.fields[k] for k in active))]
 
     @classmethod
@@ -107,28 +114,28 @@ class CronSchedule:
         """Parses a cron string, launchd dict, or list of dicts into a CronSchedule."""
         if isinstance(data, cls):
             return data
+
         if isinstance(data, str) and data.strip():
             return cls.from_cron(data)
+
         if isinstance(data, (dict, list)):
             return cls.from_dicts(data)
+
         raise ValueError(f"Invalid schedule input:\t'{data}'")
 
     @classmethod
-    def resolve(cls, a_schedule: Any | None = None, *, logger: Any | None = None) -> CronSchedule:
+    def resolve(cls, *, logger: Any | None = None) -> CronSchedule:
         """
-        Resolves schedule with 3-tier precedence:
-        1. Explicit argument (CronSchedule, dict, list of dicts, or cron string)
-        2. Saved preferences (load_preferences()['schedule'])
-        3. Config defaults (config.DEFAULTS['schedule'])
+        Resolves schedule with 2-tier precedence:
+        1. Saved preferences (load_preferences()['schedule'])
+        2. Config defaults (config.DEFAULTS['schedule'])
         """
-        if a_schedule is not None and (not isinstance(a_schedule, str) or a_schedule.strip()):
-            return cls.parse(a_schedule)
-
         if pref_sched := load_preferences().get('schedule', ''):
             try:
                 return cls.parse(pref_sched)
+
             except Exception as err:
-                log = logger or Logger()
+                log = logger or util.Logger()
                 log.print_store(
                     f"[Warning] Invalid schedule in preferences: '{pref_sched}' ({err}).  "
                     f"Falling back to default: {config.DEFAULTS['schedule']}",
@@ -137,12 +144,15 @@ class CronSchedule:
 
         return cls.from_dicts(config.DEFAULTS['schedule'])
 
-    def to_cron(self) -> str:
+    def to_cron(self) -> str:  # noqa P37-UNUSED_OKAY
         """Reconstructs a 5-part cron string from the schedule fields."""
-        return ' '.join(
-            ','.join(map(str, vals)) if (vals := self.fields.get(k)) else '*'
-            for k in self.KEYS
-        )
+        cron_list = []
+        for i in self.KEYS:
+            if int_list := self.fields.get(i):
+                cron_list.append(','.join([str(x) for x in int_list]))
+            else:
+                cron_list.append('*')
+        return ' '.join(cron_list)
 
     def to_launchd(self) -> dict[str, int] | list[dict[str, int]]:
         """Returns single dict if 1 interval, or list of dicts for launchd plist."""
@@ -150,7 +160,7 @@ class CronSchedule:
         return inter[0] if len(inter) == 1 else inter
 
 
-class LaunchAgent(PrivilegedCMD):
+class LaunchAgent(util.PrivilegedCMD):
     """
     Manages macOS LaunchAgent registration, plist generation,
     schedule preferences, and launchd service activation.
@@ -165,27 +175,19 @@ class LaunchAgent(PrivilegedCMD):
         launch_agents_dir: Path = Path('/Library/LaunchAgents'),
         log_dir: Path = Path('/Library/Logs'),
         logger: Any | None = None,
-        package_sync: Any | None = None,
         run_at_load: bool = False,
-        schedule: Any | None = None,
-        target_script: Path = config.PATHS['Script']['Target'],
+        target_script: Path | None = None,
     ) -> None:
         self._target_plist: Path | None = None
+        self._target_script: Path | None = target_script
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.label = label
         self.launch_agents_dir = launch_agents_dir
-        self.log = logger or Logger(dry_run=self.dry_run)
+        self.log = logger or util.Logger(dry_run=self.dry_run)
         self.log_dir = log_dir
-        self.logger = self.log
-        self.package_sync = package_sync or PackageSync(
-            debug_vars=self.debug_vars,
-            dry_run=self.dry_run,
-            logger=self.log,
-            target_script=target_script,
-        )
         self.run_at_load = run_at_load
-        self.schedule = CronSchedule.resolve(schedule, logger=self.log)
+        self.schedule = CronSchedule.resolve(logger=self.log)
         self.sudoers = f"/etc/sudoers.d/{config.APP_INFO['Name'].lower()}"
 
     def _init_log_files(self) -> None:
@@ -199,7 +201,7 @@ class LaunchAgent(PrivilegedCMD):
                 log_file.touch(exist_ok=True)
                 log_file.chmod(0o666)
         except OSError:
-            pass
+            pass  # Best-effort pre-creation; privileged install or Logger fallback handles permissions later
 
     def _install_privileged(self, plist_data: bytes) -> bool:
         """
@@ -218,6 +220,9 @@ class LaunchAgent(PrivilegedCMD):
             f"mkdir -p '{self.log_dir}'",
             f"touch '{self.log_dir}/{self.label}.stdout.log' '{self.log_dir}/{self.label}.stderr.log'",
             f"chmod 666 '{self.log_dir}/{self.label}.'*.log",
+            f"touch '{config.PATHS['Log']['System']}'",
+            f"chown root:admin '{config.PATHS['Log']['System']}'",
+            f"chmod 664 '{config.PATHS['Log']['System']}'",
         ]
         items = [f"  - Agent: {self.target_plist}"]
         if sudoers_cmds:
@@ -226,7 +231,7 @@ class LaunchAgent(PrivilegedCMD):
 
         installed = self.run_privileged(['sh', '-c', ' && '.join(commands)], name_running=' '.join(items))
         tmp_plist.unlink(missing_ok=True)
-        if tmp_sudoers:
+        if tmp_sudoers != Path(''):
             tmp_sudoers.unlink(missing_ok=True)
 
         if installed:
@@ -241,14 +246,22 @@ class LaunchAgent(PrivilegedCMD):
             )
         return installed
 
-    def _prepare_sudoers_commands(self) -> tuple[list[str], Path | None]:
+    @cached_property
+    def _launchctrl_print_vars(self) -> dict[str, int]:
+        if self.debug_vars['debug'] > 1:
+            return {'debug': self.debug_vars['debug'], 'debug_limit': 100}
+
+        else:
+            return self.debug_vars
+
+    def _prepare_sudoers_commands(self) -> tuple[list[str], Path]:
         """Validates sudoers content with visudo and returns (commands, tmp_file)."""
         tmp_sudoers = Path(f"/tmp/{config.APP_INFO['Name'].lower()}_sudoers")
         tmp_sudoers.write_text(self.sudoers_content, encoding='utf-8')
-        check_cmd = RunCMD(['/usr/sbin/visudo', '-c', '-f', str(tmp_sudoers)], **self.debug_vars)
+        check_cmd = util.RunCMD(['/usr/sbin/visudo', '-c', '-f', str(tmp_sudoers)], **self.debug_vars)
         if not check_cmd:
             tmp_sudoers.unlink(missing_ok=True)
-            return [], None
+            return [], Path('')
 
         commands = [
             "mkdir -p /etc/sudoers.d",
@@ -285,7 +298,7 @@ class LaunchAgent(PrivilegedCMD):
         self.bootout()
         bootstrap_cmd = ['launchctl', 'bootstrap', self.domain, str(self.target_plist)]
         launch_load_cmd = ['launchctl', 'load', '-w', str(self.target_plist)]
-        load_cmd = RunCMD(bootstrap_cmd, **self.debug_vars) or RunCMD(launch_load_cmd, **self.debug_vars)
+        load_cmd = util.RunCMD(bootstrap_cmd, **self.debug_vars) or util.RunCMD(launch_load_cmd, **self.debug_vars)
 
         if load_cmd:
             self.log.print_store(f"Activated launchd service: {self.label}", component='LaunchAgent')
@@ -293,7 +306,7 @@ class LaunchAgent(PrivilegedCMD):
 
         err = load_cmd.std_all
         if not err:
-            desc = RunCMD(['launchctl', 'error', str(load_cmd.returncode)], **self.debug_vars).strip()
+            desc = util.RunCMD(['launchctl', 'error', str(load_cmd.returncode)], **self.debug_vars).strip()
             err = desc or f"exit code {load_cmd.returncode}"
         self.log.print_store(f"Failed to activate {self.label}: {err}", component='LaunchAgent')
         return False
@@ -304,12 +317,12 @@ class LaunchAgent(PrivilegedCMD):
             self.log.print_store(f"[Dry-run] Would unload launchd service: {self.label}", component='LaunchAgent')
             return True
 
-        uid = getuid()
-        RunCMD(['launchctl', 'bootout', f"gui/{uid}/{self.label}"], **self.debug_vars)
-        RunCMD(['launchctl', 'bootout', f"user/{uid}/{self.label}"], **self.debug_vars)
+        uid = self.console_uid
+        util.RunCMD(['launchctl', 'bootout', f"gui/{uid}/{self.label}"], **self.debug_vars)
+        util.RunCMD(['launchctl', 'bootout', f"user/{uid}/{self.label}"], **self.debug_vars)
         if self.target_plist.is_file():
-            RunCMD(['launchctl', 'unload', str(self.target_plist)], **self.debug_vars)
-        RunCMD(['launchctl', 'remove', self.label], **self.debug_vars)
+            util.RunCMD(['launchctl', 'unload', str(self.target_plist)], **self.debug_vars)
+        util.RunCMD(['launchctl', 'remove', self.label], **self.debug_vars)
         return True
 
     def build_plist_data(self) -> bytes:
@@ -319,12 +332,11 @@ class LaunchAgent(PrivilegedCMD):
             session_types += ['Background', 'LoginWindow']
         plist_dict: dict[str, Any] = {
             'EnvironmentVariables':   {
-                'PATH':       '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-                'PYTHONPATH': str(self.package_sync.target_dir.parent),
+                'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
             },
             'Label':                  self.label,
             'LimitLoadToSessionType': session_types,
-            'ProgramArguments':       [self.python_bin, str(self.package_sync.target_script)],
+            'ProgramArguments':       [self.python_bin, str(self.target_script)],
             'StandardErrorPath':      f"{self.log_dir}/{self.label}.stderr.log",
             'StandardOutPath':        f"{self.log_dir}/{self.label}.stdout.log",
         }
@@ -335,11 +347,7 @@ class LaunchAgent(PrivilegedCMD):
         return plistlib.dumps(plist_dict)
 
     def check_and_install(self) -> bool:
-        """Verifies package files and LaunchAgent installation, activating if needed."""
-        if self.package_sync.files_to_update:
-            if not self.package_sync.sync(self.package_sync.files_to_update):
-                return False
-
+        """Verifies LaunchAgent installation, activating if needed."""
         if self.plist_needs_install:
             if not self.install():
                 return False
@@ -350,25 +358,32 @@ class LaunchAgent(PrivilegedCMD):
         return True
 
     @cached_property
+    def console_uid(self) -> int:
+        """Returns the active console user's UID, even when running as root under sudo."""
+        uid = getuid()
+        if uid == 0:
+            try:
+                return pwd.getpwnam(util.TortimerCreds.get_console_user()).pw_uid
+
+            except KeyError:
+                pass  # Console user not in pwd database; fall through to return root UID
+
+        return uid
+
+    @cached_property
     def domain(self) -> str:
         """Identifies active launchd domain (gui/{uid} or user/{uid})."""
-        uid = getuid()
-        return f"gui/{uid}" if RunCMD(['launchctl', 'print', f"gui/{uid}"], **self.debug_vars) else f"user/{uid}"
+        uid = self.console_uid
+        a_cmd = ['launchctl', 'print', f"gui/{uid}"]
+        return f"gui/{uid}" if util.RunCMD(a_cmd, **self._launchctrl_print_vars) else f"user/{uid}"
 
     def install(
         self,
         *,
         privileged: bool = True,
-        sync_package: bool = True,
     ) -> bool:
-        """Installs the LaunchAgent plist file and synchronizes package files."""
-        if sync_package and self.package_sync.files_to_update:
-            if not self.package_sync.sync(self.package_sync.files_to_update):
-                return False
-
+        """Installs the LaunchAgent plist file."""
         plist_data = self.build_plist_data()
-        if plist_data.startswith(b'[Error]'):
-            return False
 
         if self.dry_run:
             self.log.print_store(
@@ -376,6 +391,9 @@ class LaunchAgent(PrivilegedCMD):
                 'LaunchAgent',
             )
             return True
+
+        if privileged and getuid() == 0:
+            return self._install_privileged(plist_data)
 
         try:
             write_file(self.target_plist, plist_data)
@@ -397,9 +415,8 @@ class LaunchAgent(PrivilegedCMD):
         """Checks if the service is currently registered with launchd."""
         gui_target = f"{self.domain}/{self.label}"
         return bool(
-            RunCMD(['launchctl', 'print', gui_target], **self.debug_vars)
-            or
-            RunCMD(['launchctl', 'list', self.label], **self.debug_vars),
+            util.RunCMD(['launchctl', 'print', gui_target], **self._launchctrl_print_vars)
+            or util.RunCMD(['launchctl', 'list', self.label], **self.debug_vars),
         )
 
     @property
@@ -440,7 +457,10 @@ class LaunchAgent(PrivilegedCMD):
             self.target_plist.unlink()
             self.log.print_store(f"Removed {self.target_plist}", 'LaunchAgent')
         except PermissionError:
-            if self.run_privileged(['rm', '-f', str(self.target_plist)], name_running=f"  - Plist: {self.target_plist}"):
+            if self.run_privileged(
+                ['rm', '-f', str(self.target_plist)],
+                name_running=f"  - Plist: {self.target_plist}",
+            ):
                 self.log.print_store(f"Removed {self.target_plist}", 'LaunchAgent')
             else:
                 self.log.print_store(
@@ -478,13 +498,42 @@ class LaunchAgent(PrivilegedCMD):
     def target_plist(self, val: Path) -> None:
         self._target_plist = val
 
+    @property
+    def target_script(self) -> Path:
+        """Resolves the target executable script for LaunchAgent ProgramArguments."""
+        if self._target_script:
+            return self._target_script
+
+        targets = config.PATHS['Script']['Target']
+        if isinstance(targets, Path):
+            return targets
+
+        for candidate in targets:
+            if candidate.is_file():
+                return candidate
+
+        for candidate in targets:
+            if candidate.parent.is_dir():
+                return candidate
+
+        if brew_bin := shutil.which('freshenmac'):
+            return Path(brew_bin)
+
+        if brew_prefix := util.RunCMD(['brew', '--prefix'], **self.debug_vars).strip():
+            return Path(brew_prefix) / 'bin/freshenmac'
+
+        return config.PATHS['Script']['Source']
+
+    @target_script.setter
+    def target_script(self, val: Path) -> None:
+        self._target_script = val
+
     def uninstall(self) -> bool:
-        """Removes the launchd service from startup and unlinks installed files."""
+        """Removes the launchd service from startup and cleans up sudoers."""
         try:
             StartupRun(debug_vars=self.debug_vars, dry_run=self.dry_run, logger=self.log).agent.remove_script()
             self.remove_script()
             self._remove_sudoers()
-            self.package_sync.uninstall()
             return True
 
         except Exception as err_uninst:
@@ -492,200 +541,7 @@ class LaunchAgent(PrivilegedCMD):
             return False
 
 
-class PackageSync(PrivilegedCMD):
-    """
-    Manages synchronization of FreshenMac package files from source to
-    the system installation directory in /Library/scripts/User.
-    """
-
-    def __init__(
-        self,
-        *,
-        debug_vars: dict[str, int] | None = None,
-        dry_run: bool = False,
-        logger: Any | None = None,
-        target_dir: Path = config.PATHS['Dir']['Target'],
-        target_script: Path = config.PATHS['Script']['Target'],
-    ) -> None:
-        self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
-        self.dry_run = dry_run
-        self.log = logger or Logger(dry_run=self.dry_run)
-        self.logger = self.log
-        self.target_dir = target_dir
-        self.target_script = target_script
-
-    @property
-    def files_to_update(self) -> list[Path]:
-        """Returns list of package files in config.PATHS['Dir']['Package'] that are missing/outdated in target_dir."""
-        if config.PATHS['Dir']['Package'] == self.target_dir:
-            return []
-
-        return [
-            f for f in config.PATHS['Dir']['Package'].glob('*.py')
-            if file_needs_update(f, self.target_dir / f.name)
-        ]
-
-    def sync(self, files: list[Path] | None = None) -> bool:
-        """Synchronizes specified files (or all outdated files) to the target installation directory."""
-        if files is None:
-            files = self.files_to_update
-        if not files:
-            self.log.print_store(f"Installed {config.APP_INFO['Name']} is already up to date.", 'PackageSync')
-            return True
-
-        if self.dry_run:
-            self.log.print_store(
-                f"[Dry-run] Would update {len(files)} file(s) in {self.target_dir}",
-                component='PackageSync',
-            )
-            return True
-
-        self.log.print_store(
-            f"Updating {config.APP_INFO['Name']} ({len(files)} file(s) changed: {', '.join(f.name for f in files)})...",
-            'PackageSync',
-        )
-        try:
-            self.target_dir.mkdir(parents=True, exist_ok=True)
-            for py_file in files:
-                dest_file = self.target_dir / py_file.name
-                copy2(py_file, dest_file)
-                dest_file.chmod(0o755 if py_file.name == self.target_script.name else 0o644)
-                self.log.print_store(f"Successfully updated {py_file.name} in {self.target_dir}.", 'PackageSync')
-            return True
-
-        except PermissionError:
-            copy_cmds = [f"cp '{f}' '{self.target_dir}/'" for f in files]
-            permission_cmd = (
-                f"mkdir -p '{self.target_dir}' && "
-                f"{' && '.join(copy_cmds)} && "
-                f"chmod 755 '{self.target_script}'"
-            )
-            a_cmd = ['sh', '-c', permission_cmd]
-            if self.run_privileged(a_cmd, name_running=f"  - Package: {self.target_dir}"):
-                self.log.print_store(
-                    f"Successfully updated {config.APP_INFO['Name']} in {self.target_dir}.",
-                    'PackageSync',
-                )
-                return True
-
-            self.log.print_store(
-                f"\n[WARNING] Unable to update {self.target_dir} (permission denied).\n"
-                f"To update manually, run:\n  sudo {permission_cmd}\n",
-                'PackageSync',
-            )
-            return False
-
-    def uninstall(self) -> bool:
-        """Removes installed package directory or script from target installation directory."""
-        if self.target_dir.is_dir():
-            if self.dry_run:
-                self.log.print_store(f"[Dry-run] Would remove {self.target_dir}", 'PackageSync')
-                return True
-
-            try:
-                for py_file in self.target_dir.glob('*.py'):
-                    py_file.unlink()
-                try:
-                    self.target_dir.rmdir()
-                except OSError:
-                    pass
-                self.log.print_store(
-                    f"Removed installed {config.APP_INFO['Name']} package from {self.target_dir}",
-                    'PackageSync',
-                )
-            except PermissionError:
-                if self.run_privileged(
-                    ['rm', '-rf', str(self.target_dir)],
-                    name_running=f"  - Package: {self.target_dir}",
-                ):
-                    self.log.print_store(f"Removed {self.target_dir}", 'PackageSync')
-                else:
-                    self.log.print_store(
-                        f"Note: {self.target_dir} remains.  To remove:\n  sudo rm -rf {self.target_dir}",
-                        'PackageSync',
-                    )
-        elif self.target_script.is_file():
-            if self.dry_run:
-                self.log.print_store(f"[Dry-run] Would remove {self.target_script}", 'PackageSync')
-                return True
-
-            try:
-                self.target_script.unlink()
-                self.log.print_store(f"Removed {self.target_script}", 'PackageSync')
-            except PermissionError:
-                if self.run_privileged(
-                    ['rm', '-f', str(self.target_script)],
-                    name_running=f"  - Script: {self.target_script}",
-                ):
-                    self.log.print_store(f"Removed {self.target_script}", 'PackageSync')
-                else:
-                    self.log.print_store(
-                        f"Note: {self.target_script} remains.  To remove:\n  sudo rm {self.target_script}",
-                        'PackageSync',
-                    )
-        else:
-            self.log.print_store(f"Unable to find {self.target_dir}", 'PackageSync')
-            self.log.print_store(f"Unable to find {self.target_script}", 'PackageSync')
-            self.log.print_store(f"Uninstall of {config.APP_INFO['Name']} FAILED", 'PackageSync')
-            return False
-
-        return True
-
-    def update_files(self, target: Path | None = None) -> bool:
-        """Updates specific target file or synchronizes package files if outdated."""
-        if target is None:
-            if config.PATHS['Dir']['Package'] == self.target_dir:
-                self.log.print_store(f"Running script is already {self.target_script}.", 'PackageSync')
-                return True
-
-            return self.sync()
-
-        target_script = Path(target)
-        source_script = config.PATHS['Script']['Source'] if config.PATHS['Script']['Source'].is_file() else Path(
-            __file__,
-        ).resolve()
-
-        if source_script == target_script:
-            self.log.print_store(f"Running script is already {target_script}.", 'PackageSync')
-            return True
-
-        if not file_needs_update(source_script, target_script):
-            self.log.print_store(f"Installed script {target_script} is already up to date.", 'PackageSync')
-            return True
-
-        src_build = f"{get_file_build(source_script):.6g}"  # Just to keep the floats from being 82518238110 digits long
-        if self.dry_run:
-            self.log.print_store(f"[Dry-run] Would update {target_script} to build {src_build}", 'PackageSync')
-            return True
-
-        self.log.print_store(f"Updating {target_script} to build {src_build}...", 'PackageSync')
-        try:
-            target_script.parent.mkdir(parents=True, exist_ok=True)
-            copy2(source_script, target_script)
-            target_script.chmod(0o755)
-            self.log.print_store(f"Successfully updated {target_script} to build {src_build}.", 'PackageSync')
-            return True
-
-        except PermissionError:
-            permission_cmd = (
-                f"mkdir -p '{target_script.parent}' && "
-                f"cp '{source_script}' '{target_script}' && "
-                f"chmod 755 '{target_script}'"
-            )
-            a_cmd = ['sh', '-c', permission_cmd]
-            if self.run_privileged(a_cmd, name_running=f"  - Script: {target_script}"):
-                self.log.print_store(f"Successfully updated {target_script} to build {src_build}.", 'PackageSync')
-                return True
-
-            self.log.print_store(
-                f"\n[WARNING] Unable to update {target_script} (permission denied).\n"
-                f"To update manually, run:\n  sudo {permission_cmd}\n",
-                'PackageSync',
-            )
-            return False
-
-
-class SavePreferences(PrivilegedCMD):
+class SavePreferences(util.PrivilegedCMD):
     """
     Parses and saves FreshenMac preferences to the system or user plist.
 
@@ -699,14 +555,20 @@ class SavePreferences(PrivilegedCMD):
     """
 
     SCHEMA: dict[str, dict[str, str]] = {
-        'no-mas':   {
+        'download-speed': {
+            'short':   'Minimum expected download speed in Mbps',
+            'type':    'float',
+            'help':    'Minimum download speed in Mbps used to calculate dynamic App Store timeouts (default: 5.0)',
+            'example': 'download-speed=10',
+        },
+        'no-mas':         {
             'short':   'Skip updating an App Store item',
             'type':    'list',
             'help':    'App Store apps to skip by name or numeric ID (space-separated)',
             'example': 'no-mas=iPhoto Aperture',
             'note':    'in the example above, it looks for both "iPhoto" and "Aperture".',
         },
-        'schedule': {
+        'schedule':       {
             'short':   'Set a schedule like cron',
             'type':    'cron',
             'help':    'LaunchAgent schedule in cron syntax (minute hour day month weekday)',
@@ -726,12 +588,11 @@ class SavePreferences(PrivilegedCMD):
         self._parse_error = False
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
-        self.log = logger or Logger(dry_run=self.dry_run)
-        self.logger = self.log
+        self.log = logger or util.Logger(dry_run=self.dry_run)
         self.user_pref = user_pref
         self.updates = self._parse(updates)
 
-    def _normalize(self, updates: dict[str, Any]) -> dict[str, Any] | None:
+    def _normalize(self, updates: dict[str, Any]) -> dict[str, Any]:
         result = {}
         for raw_key, value in updates.items():
             key = raw_key.lower()
@@ -739,7 +600,7 @@ class SavePreferences(PrivilegedCMD):
                 self.log.print_store(f"[Error] Unknown preference key: '{raw_key}'", component='Preferences')
                 self._parse_error = True
                 self.print_help()
-                return None
+                return {}
 
             if self.SCHEMA[key]['type'] == 'list':
                 items = value.split() if isinstance(value, str) else [str(x) for x in value]
@@ -748,27 +609,36 @@ class SavePreferences(PrivilegedCMD):
                 try:
                     if isinstance(value, str) and value.lower() == 'help':
                         self.log.printf(CronSchedule.help())
-                        return None
+                        return {}
 
                     result[key] = CronSchedule.parse(value).to_launchd()
                 except ValueError as err:
                     self.log.print_store(f"[Error] Invalid schedule: {err}", component='Preferences')
                     self._parse_error = True
-                    return None
+                    return {}
+
+            elif self.SCHEMA[key]['type'] == 'float':
+                try:
+                    result[key] = float(value)
+                except (TypeError, ValueError):
+                    self.log.print_store(f"[Error] Invalid float for '{key}': '{value}'", component='Preferences')
+                    self._parse_error = True
+                    return {}
 
             else:
                 result[key] = value
+
         return result
 
-    def _parse(self, raw: dict[str, Any] | str | None) -> dict[str, Any] | None:
+    def _parse(self, raw: dict[str, Any] | str | None) -> dict[str, Any]:
         if not raw:
-            return None
+            return {}
 
         if isinstance(raw, dict):
             return self._normalize(raw)
 
         if raw.strip().lower() == 'help':
-            return None
+            return {}
 
         if '=' not in raw:
             self.log.print_store(
@@ -777,7 +647,7 @@ class SavePreferences(PrivilegedCMD):
             )
             self._parse_error = True
             self.print_help()
-            return None
+            return {}
 
         key, _, value = raw.partition('=')
         return self._normalize({key: value})
@@ -793,7 +663,7 @@ class SavePreferences(PrivilegedCMD):
             help_line = [
                 f"  {key}:\t{meta['short']}\n",
                 f"    {meta['help']}",
-                f"\tExample:  `--save-prefs '{meta['example']}'`",
+                f"\tExample:  `--save-pref '{meta['example']}'`",
             ]
             if a_note := meta.get('note'):
                 help_line.append(f"\tNote:     {a_note}")
@@ -859,8 +729,7 @@ class StartupRun:
         self.debug_vars = debug_vars or {'debug': 0, 'debug_limit': 0}
         self.dry_run = dry_run
         self.label = label
-        self.log = logger or Logger(dry_run=self.dry_run)
-        self.logger = self.log
+        self.log = logger or util.Logger(dry_run=self.dry_run)
         self.agent = LaunchAgent(
             label=self.label,
             debug_vars=self.debug_vars,
@@ -893,7 +762,7 @@ class StartupRun:
 
     def schedule(self) -> bool:
         """Creates and activates the one-shot LaunchAgent to rerun FreshenMac on next login."""
-        return self.agent.install(privileged=False, sync_package=False) and self.agent.activate()
+        return self.agent.install(privileged=False) and self.agent.activate()
 
     @property
     def target_plist(self) -> Path:
@@ -905,47 +774,6 @@ class StartupRun:
         self.agent.target_plist = val
 
 
-def check_plist(
-    a_plist: str = config.DEFAULTS['plist'],
-    cron_dict: dict | list[dict] = config.DEFAULTS['schedule'],
-    *,
-    debug_vars: dict[str, int] | None = None,
-    dry_run: bool = False,
-    logger: Any | None = None,
-) -> bool:
-    """Checks if .plist for this file is in /Library/LaunchAgents and active, if not, creates file and activates it."""
-    return LaunchAgent(
-        label=a_plist,
-        debug_vars=debug_vars,
-        dry_run=dry_run,
-        logger=logger,
-        schedule=cron_dict,
-    ).check_and_install()
-
-
-def file_needs_update(source_file: Path, target_file: Path) -> bool:
-    """Checks whether target_file is missing or has a lower build than source_file."""
-    if not target_file.is_file():
-        return True
-
-    dst_build = get_file_build(target_file)
-    return dst_build < 1 or get_file_build(source_file) > dst_build
-
-
-def get_file_build(path: Path) -> float:
-    """Extracts FILE_BUILD float from a Python file if defined."""
-    result = 0.0
-    if path.is_file():
-        try:
-            content = path.read_text(encoding='utf-8')
-            match = PATTERN['File Build'].search(content)
-            if match:
-                result = float(match.group('build'))
-        except Exception:
-            pass
-    return result
-
-
 def load_preferences() -> dict[str, Any]:
     """Loads preferences from /Library/Preferences and ~/Library/Preferences (user overrides default)."""
     prefs: dict[str, Any] = {}
@@ -954,7 +782,7 @@ def load_preferences() -> dict[str, Any]:
             try:
                 prefs.update(plistlib.loads(pref_file.read_bytes()))
             except Exception as err:
-                log = Logger()
+                log = util.Logger()
                 log.print_store(
                     f"[Warning] Unable to load preferences file: '{pref_file}' ({err})",
                     component='Preferences',

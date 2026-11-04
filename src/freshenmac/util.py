@@ -10,7 +10,7 @@ import subprocess
 import sys
 import textwrap
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,15 +19,15 @@ from glob import glob
 from pathlib import Path
 from random import choice
 from shutil import get_terminal_size
-from typing import Any, IO
+from typing import Any, ClassVar, IO, Literal
 
 from freshenmac import config
 
-FILE_BUILD = 20261027
-PATTERN = {
+FILE_BUILD = 20261103
+PATTERN: dict[str, re.Pattern[str]] = {
     'Word': re.compile(r"\w+"),
 }
-RETURNCODE = {
+RETURNCODE: dict[str, int] = {
     'Failed':  -65,  # noqa E221
     'General': -70,
     'Timeout': -80,
@@ -49,12 +49,9 @@ class Logger:
         component: str = config.APP_INFO['Name'],
         dry_run: bool = False,
         log_file: Path | None = None,
-        tagged: bool = False,
     ) -> None:
         self.component = component
         self.dry_run = dry_run
-        self.log_file = log_file
-        self.tagged = tagged
         self.target = log_file or get_log_file()
 
         is_test = 'unittest' in sys.modules and (log_file is None or log_file == get_log_file())
@@ -64,7 +61,7 @@ class Logger:
             try:
                 self.target.parent.mkdir(parents=True, exist_ok=True)
             except OSError:
-                pass
+                pass  # Best-effort init; _write_line recovers permissions or falls back on first write
 
     def _disable_logger(self, error: Exception | None = None) -> None:
         """Disables persistent file logging and notifies the user."""
@@ -105,7 +102,8 @@ class Logger:
                 try:
                     self.target.parent.mkdir(parents=True, exist_ok=True)
                 except OSError:
-                    pass
+                    pass  # Continue to _line_append and Stage 4 (/var/tmp) fallback if mkdir fails
+
                 if self._line_append(formatted) is None:
                     return
 
@@ -157,16 +155,16 @@ class PlaySound:
     DEFAULT_SOUND: str = '/System/Library/Sounds/Pop.aiff'
     SOUND_DIR: str = '/System/Library/Sounds/'
 
-    def __init__(self, sound: str = 'Ping'):
+    def __init__(self, sound: str = 'Ping') -> None:
         self.sound: str = sound
         self.sound_list: list[str] = []
         self.sound = self._normalize_file()
 
-    def __enter__(self):
+    def __enter__(self) -> PlaySound:
         self.play()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
         return False
 
     def _normalize_file(self) -> str:
@@ -187,7 +185,7 @@ class PlaySound:
                 self.sound_list.append(a_match)
         return choice(self.sound_list) if self.sound_list else self.DEFAULT_SOUND
 
-    def play(self):
+    def play(self) -> None:
         RunCMD(['afplay', self.sound], interactive=True)
 
     def valid_file(self, a_file: str | None = None) -> bool:
@@ -198,7 +196,7 @@ class PlaySound:
 
 
 class PrivilegedCMD:
-    debug_vars: dict
+    debug_vars: dict[str, Any]
 
     def _sudo_write_pref(self, data: bytes, target_pref: Path) -> bool:
         """Writes preference data to target_pref via sudo cp."""
@@ -245,7 +243,7 @@ class RunAppleScript:
         background: bool = False,
         debug: int = 0,
         debug_limit: int = 0,
-    ):
+    ) -> None:
         self.background = background
         self.debug = debug
         self.debug_limit = debug_limit
@@ -287,7 +285,7 @@ class RunAppleScript:
         giving_up_after: int = 0,
         icon: str | None = 'caution',
         title: str | None = None,
-    ) -> 'RunAppleScript':
+    ) -> RunAppleScript:
         """Displays a System Events dialog and returns a RunAppleScript instance."""
         btn_str = ', '.join(f'"{b}"' for b in buttons)
         opts = f'buttons {{{btn_str}}}'
@@ -295,27 +293,20 @@ class RunAppleScript:
         opts += f' giving up after {giving_up_after}' if giving_up_after > 0 else ''
         opts += f' with icon {icon}' if icon else ''
         opts += f' with title "{title}"' if title else ''
-        script = f'tell application "System Events"\n    activate\n    display dialog "{message}" {opts}\nend tell'
         timeout = timeout or (giving_up_after + 10 if giving_up_after else 0)
-        return cls(script, timeout, background=background, debug=debug, debug_limit=debug_limit)
+        if timeout:
+            script = (
+                f'with timeout of {timeout} seconds\n'
+                f'    tell application "System Events"\n'
+                f'        activate\n'
+                f'        display dialog "{message}" {opts}\n'
+                f'    end tell\n'
+                f'end timeout'
+            )
+        else:
+            script = f'tell application "System Events"\n    activate\n    display dialog "{message}" {opts}\nend tell'
 
-    @classmethod
-    def notify(
-        cls,
-        message: str | list[str],
-        timeout: int = 0,
-        *,
-        background: bool = True,
-        debug: int = 0,
-        debug_limit: int = 0,
-        subtitle: str | None = None,
-        title: str | None = None,
-    ) -> 'RunAppleScript':
-        """Displays a macOS notification and returns a RunAppleScript instance."""
-        cmd = f'display notification "{message}"'
-        cmd += f' with title "{title}"' if title else ''
-        cmd += f' subtitle "{subtitle}"' if subtitle else ''
-        return cls(cmd, timeout, background=background, debug=debug, debug_limit=debug_limit)
+        return cls(script, timeout, background=background, debug=debug, debug_limit=debug_limit)
 
     def run(self) -> None:
         if self.debug > 0:
@@ -369,8 +360,7 @@ class RunCMD:
         cancelable: bool | None = None,
         debug: int = 0,
         debug_limit: int = 0,
-        download: bool = False,
-        environ: dict | None = None,
+        environ: dict[str, str] | None = None,
         interactive: bool = False,
         need_root: bool = False,
         need_shell: bool = False,
@@ -379,9 +369,9 @@ class RunCMD:
         spinner: bool | None = None,
         taskpolicy: str | None = None,
         to_input: str | None = None,
-    ):
+    ) -> None:
         """
-        :param cancelable: Allow command to be canceled by user (Ctrl+C).
+        :param cancelable: Allow command to be canceled by user (Control^C).
         :param debug: Verbosity/debug level (0=quiet, 1=verbose, 2+=command execution dumps)
         :param interactive: ``True:`` do not capture stdout/stderr to allow interactive TTY prompts
         :param spinner: ``True (or None and timeout >= 30):`` show a terminal spinner during execution
@@ -390,15 +380,12 @@ class RunCMD:
         :param to_input: String content to pass to standard input (stdin).
         """
         if cancelable is None:
-            cancelable = timeout in config.TIMEOUT.values()
+            cancelable = timeout >= config.TIMEOUT['All']['Minimum']
         self.cancelable = cancelable
-        self.canceled = False
         self.cmd_args = cmd_args
         self.debug = debug
         self.debug_limit = debug_limit
-        self.download = download
         self.environ = environ or {}
-        self.error_info: dict[str, Any] | None = None
         self.initial_need_root = need_root
         self.interactive = interactive
         self.need_root = need_root
@@ -431,26 +418,26 @@ class RunCMD:
                 f'''{f" {self.shell_cmd or ''} ":─^30}\n''',
             )
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return self.returncode == 0
 
-    def __contains__(self, item):
+    def __contains__(self, item: str) -> bool:
         return item in self.stdout
 
-    def __getitem__(self, item):
+    def __getitem__(self, item) -> Any:
         return self.stdout.splitlines()[item]
 
-    def __iadd__(self, other):
+    def __iadd__(self, other: Any) -> RunCMD:  # noqa P37-UNUSED_OKAY
         self.stdout = self.stdout + other
         return self
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self.stdout.splitlines() if self.stdout else [])
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.stdout.splitlines())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.stdout
 
     def _check_permission(self) -> None:
@@ -462,7 +449,7 @@ class RunCMD:
             self.need_root = False
             self.run()
 
-    def _get_output(self, a_subprocess: subprocess.CompletedProcess | subprocess.SubprocessError):
+    def _get_output(self, a_subprocess: subprocess.CompletedProcess | subprocess.SubprocessError) -> None:
         if isinstance(a_subprocess, subprocess.CompletedProcess):
             self.stdout = a_subprocess.stdout or ''
             self.stderr = a_subprocess.stderr or ''
@@ -473,13 +460,6 @@ class RunCMD:
             self.returncode = RETURNCODE['Timeout']
         else:
             self.returncode = RETURNCODE['General']
-        self.error_info = {
-            'cmd':        getattr(a_subprocess, 'cmd', None) or getattr(a_subprocess, 'args', None),
-            'stdout':     self._read_bytes(getattr(a_subprocess, 'stdout', None)),
-            'stderr':     self._read_bytes(getattr(a_subprocess, 'stderr', None)),
-            'timeout':    getattr(a_subprocess, 'timeout', None),
-            'returncode': getattr(a_subprocess, 'returncode', None),
-        }
 
     def _prepend(self, argument: str | list[str], a_cmd: list[str] | None = None) -> list[str]:
         """Prepend argument to the command"""
@@ -492,15 +472,7 @@ class RunCMD:
         else:
             return argument + a_cmd
 
-    @staticmethod
-    def _read_bytes(some_bytes: bytes | None) -> str:
-        """Convert bytes to string, handling potential encoding issues."""
-        if isinstance(some_bytes, bytes):
-            return some_bytes.decode('utf-8', errors='backslashreplace')
-
-        return str(some_bytes) if some_bytes else ''
-
-    def _run_cmd(self, run_cmd_args: list[str], popen_env) -> None:
+    def _run_cmd(self, run_cmd_args: list[str], popen_env: dict[str, str] | None) -> None:
         try:
             result = subprocess.run(
                 run_cmd_args,
@@ -522,7 +494,6 @@ class RunCMD:
         except KeyboardInterrupt:
             if self.cancelable:
                 self.returncode = 130
-                self.canceled = True
                 self.stderr = f"Command canceled by user: {str_join(run_cmd_args)}"
                 print(f"\n[Canceled] Skipped by user: {str_join(self.cmd_args)}")
             else:
@@ -533,11 +504,12 @@ class RunCMD:
             self.stderr = f"Unable to run command: {err_msg_run}\n\t{run_cmd_args}\n"
 
     @contextmanager
-    def _spinner(self):
+    def _spinner(self) -> Iterator[Runner | None]:
         should_spin = not self.interactive and self.spinner is not False
         should_spin = should_spin and (self.spinner or self.timeout >= 30)
         if not should_spin:
             yield None
+
             return
 
         display_cmd = ' '.join(str_join(self.cmd_args, strip=True).split())  # Seems redundant, removes \n
@@ -582,7 +554,7 @@ class RunCMD:
             print(json.dumps(some_dict, indent=2, ensure_ascii=False))
         return some_dict
 
-    def run(self):
+    def run(self) -> None:
         popen_env = None
         run_cmd_args = self.cmd_args[:]
         verbose_environ = ''
@@ -613,7 +585,7 @@ class RunCMD:
     def std_all(self) -> str:
         return '\n'.join([self.stdout, self.stderr]).strip()
 
-    def strip(self):
+    def strip(self) -> str:
         return self.stdout.strip()
 
 
@@ -627,10 +599,10 @@ class Runner:
         self,
         target: Callable[..., Any] | None = None,
         *,
-        args: tuple = (),
+        args: tuple[Any, ...] = (),
         condition: Callable[[], bool] | bool = True,
         join_timeout: float = 1.0,
-        kwargs: dict | None = None,
+        kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.args = args
         self.condition = condition
@@ -640,7 +612,7 @@ class Runner:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def __enter__(self) -> 'Runner':
+    def __enter__(self) -> Runner:
         self.start()
         return self
 
@@ -655,11 +627,7 @@ class Runner:
 
     def _run(self) -> None:
         """Default target if not provided; can be overridden by subclasses."""
-        pass
-
-    @property
-    def is_alive(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
+        pass  # Intentional no-op default hook when no target callable or subclass override is used
 
     def start(self) -> None:
         if not self._can_run():
@@ -686,10 +654,9 @@ class SudoKeepAlive(Runner):
     Maintains active sudo credentials in the background by periodically
     refreshing the timestamp via 'sudo -n -v' while FreshenMac is executing.
     """
-    DEFAULT_INTERVAL: int = 60
 
-    def __init__(self, interval: int = DEFAULT_INTERVAL) -> None:
-        self.interval = interval
+    def __init__(self, interval_seconds: int = 60) -> None:
+        self.interval = interval_seconds
         super().__init__(
             condition=True,
             join_timeout=1.0,
@@ -724,8 +691,10 @@ class TortimerCreds:
                 console_user = pwd.getpwuid(console_uid).pw_name
                 if console_user != 'root':
                     return console_user
+
             except (KeyError, OSError):
-                pass  # We can't get console username
+                pass  # Console owner lookup failed; fall through to return current user
+
         return user
 
     @classmethod
@@ -761,7 +730,7 @@ class Version:
     parts: tuple[int, ...]
     raw: str = field(compare=False, default='')
 
-    ver_words = {
+    ver_words: ClassVar[dict[str, int]] = {
         'snapshot': -9,  # noqa E221  # Earliest / dev build
         'nightly':  -9,  # noqa E221  # Automated dev build
         'dev':      -9,  # noqa E221  # Explicit dev release
@@ -845,7 +814,7 @@ class Version:
         return ''
 
     @classmethod
-    def parse(cls, v_str: Any) -> 'Version':
+    def parse(cls, v_str: Any) -> Version:
         has_letters = False
         raw = cls._make_raw(v_str)
         cleaned = re.sub(r'^[vV](?=\d)', '', raw)
@@ -878,7 +847,7 @@ class Version:
             ver = work_list
         return cls(parts=tuple(ver), raw=raw)
 
-    def parse_other(self, other: Any) -> 'Version | None':
+    def parse_other(self, other: Any) -> Version | None:
         if isinstance(other, Version):
             return other
 
@@ -907,8 +876,8 @@ class Wave(Runner):
         force: bool = False,
         persist: bool = False,
         static_msg: str = 'Running',
-        stream: Any = None,
-    ):
+        stream: IO | None = None,
+    ) -> None:
         self.banner = banner
         self.direction = direction[0].lower()
         self.force = force
@@ -960,7 +929,7 @@ class Wave(Runner):
         self.stream.write(f"\r{some_text}")
         self.stream.flush()
 
-    def _undulate(self):
+    def _undulate(self) -> None:
         # Wait before showing anything
         if not self.banner and self._stop_event.wait(0.25):
             return
@@ -1006,7 +975,28 @@ def get_log_file() -> Path:
     return user_log
 
 
-def is_app_running(app_name: str, debug_vars: dict | None = None) -> bool:
+def get_running_gui_apps(debug_vars: dict | None = None) -> set[str]:
+    """Fetches all non-background GUI process names once using System Events with fallback."""
+    try:
+        gui_cmd = RunAppleScript(
+            'tell application "System Events" to get name of every process whose background only is false',
+            **(debug_vars or {}),
+        )
+        if gui_cmd and gui_cmd.stdout:
+            return {name.strip().lower() for name in gui_cmd.stdout.split(',') if name.strip()}
+
+    except Exception:
+        pass  # Fallback to empty set if System Events query fails
+
+    return set()
+
+
+def is_app_running(
+    app_name: str,
+    debug_vars: dict | None = None,
+    *,
+    running_gui_apps: set[str] | None = None,
+) -> bool:
     """Checks if an application is currently running on the system."""
     debug_vars = debug_vars or {}
     if RunCMD(['pgrep', '-f', f"{app_name}.app"], **debug_vars):
@@ -1015,16 +1005,11 @@ def is_app_running(app_name: str, debug_vars: dict | None = None) -> bool:
     if RunCMD(['pgrep', '-x', app_name], **debug_vars):
         return True
 
-    gui_cmd = RunAppleScript(
-        'tell application "System Events" to get name of every process whose background only is false',
-        **debug_vars,
-    )
-    if gui_cmd:
-        running_names = [name.strip().lower() for name in gui_cmd.stdout.split(',')]
-        if app_name.lower() in running_names:
-            return True
+    if running_gui_apps is not None:
+        return app_name.lower() in running_gui_apps
 
-    return False
+    gui_apps = get_running_gui_apps(debug_vars)
+    return app_name.lower() in gui_apps
 
 
 def is_interactive(stream: IO | None = sys.stdin) -> bool:
@@ -1036,7 +1021,7 @@ def parse_version(version: Any) -> Version:
 
 
 def str_join(
-    a_list: Any,
+    a_list: Iterable[Any],
     joiner: str = ' ',
     *,
     skip_none: bool = False,
