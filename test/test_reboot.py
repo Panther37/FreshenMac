@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import signal
 import subprocess
@@ -436,6 +438,32 @@ class TestReboot(unittest.TestCase):
         # Safety guard verification
         ensure_no_active_shutdown()
 
+    def test_get_pending_updates_deduplication(self):
+        """Verifies _get_pending_updates deduplicates exact duplicate entries and sorts alphabetically."""
+        self.reboot.reboot.required = ['macOS Sonoma 14.5', 'Apple Software Updates']
+        self.reboot.computer.softwareupdate.summary['downloaded'] = [
+            'Apple Software Updates',
+            'Safari 17.5',
+        ]
+
+        result = self.reboot._get_pending_updates()
+
+        self.assertEqual(result, ['Apple Software Updates', 'Safari 17.5', 'macOS Sonoma 14.5'])
+
+    def test_get_pending_updates_fallback_to_suggested(self):
+        """Verifies _get_pending_updates falls back to suggested updates and skips Uptime items."""
+        self.reboot.reboot.required = []
+        self.reboot.computer.softwareupdate.summary['downloaded'] = []
+        self.reboot.reboot.suggested = ['Uptime exceeded threshold', 'Xcode Command Line Tools']
+
+        result = self.reboot._get_pending_updates()
+
+        self.assertEqual(result, ['Xcode Command Line Tools'])
+
+        # Empty fallback
+        self.reboot.reboot.suggested = ['Uptime exceeded threshold']
+        self.assertEqual(self.reboot._get_pending_updates(), [])
+
     def test_graceful_restart_dry_run(self):
         """Verifies graceful_restart performs no actions when dry_run is True."""
         self.reboot.dry_run = True
@@ -553,6 +581,46 @@ class TestReboot(unittest.TestCase):
             choice = self.reboot.prompt_initial()
             self.assertEqual(choice, 'now')
 
+    def test_prompt_initial_locked_and_idle_proceeds_to_now(self):
+        """Verifies prompt_initial proceeds to 'now' without snooze when dialog fails and machine is idle."""
+        self.reboot.dry_run = False
+        failed_dialog = make_ascript(errno=1, stderr='execution error: An error occurred (-1708)')
+        with patch.object(
+            self.reboot, 'play_chime',
+        ), patch(
+            'freshenmac.boot.util.RunAppleScript.dialog', return_value=failed_dialog,
+        ), patch.object(
+            MacOS, 'is_idle', new_callable=PropertyMock, return_value=True,
+        ):
+            choice = self.reboot.prompt_initial()
+            self.assertEqual(choice, 'now')
+
+    def test_prompt_initial_includes_pending_updates(self):
+        """Verifies prompt_initial formats pending updates as bulleted list in dialog body."""
+        self.reboot.dry_run = False
+        self.reboot.reboot.required.append('macOS update: 15.8.1 ─▷ 15.8.2')
+        self.reboot.computer.softwareupdate.summary['downloaded'].append('Safari27.2SequoiaAuto-27.2')
+
+        captured_dialog = []
+
+        def mock_dialog(message, *args, **kwargs):
+            captured_dialog.append(message)
+            return make_ascript(stdout='button returned:Restart Now')
+
+        with patch.object(
+            self.reboot, 'play_chime',
+        ), patch.object(
+            MacOS, 'is_idle', new_callable=PropertyMock, return_value=False,
+        ), patch(
+            'freshenmac.boot.util.RunAppleScript.dialog', side_effect=mock_dialog,
+        ):
+            choice = self.reboot.prompt_initial()
+            self.assertEqual(choice, 'now')
+            self.assertTrue(len(captured_dialog) > 0)
+            self.assertIn('A system restart is required for updates:', captured_dialog[0])
+            self.assertIn('• macOS update: 15.8.1 ─▷ 15.8.2', captured_dialog[0])
+            self.assertIn('• Safari27.2SequoiaAuto-27.2', captured_dialog[0])
+
     def test_prompt_initial_restart_now(self):
         """Verifies prompt_initial returns 'now' when user clicks Restart Now."""
         self.reboot.dry_run = False
@@ -575,11 +643,32 @@ class TestReboot(unittest.TestCase):
         ) as mock_chime, patch(
             'freshenmac.boot.util.RunAppleScript.dialog',
             return_value=make_ascript(stdout='button returned:Snooze'),
-        ):
+        ) as mock_dialog:
             choice = self.reboot.prompt_initial()
             self.assertEqual(choice, 'snooze')
             self.assertEqual(self.reboot.snoozes_left, 2)
             mock_chime.assert_called_once_with('Ping')
+            mock_dialog.assert_called_once()
+            _, kwargs = mock_dialog.call_args
+            self.assertEqual(kwargs.get('default_button'), 'Snooze')
+
+    def test_prompt_initial_timeout_defaults_to_snooze(self):
+        """Verifies prompt_initial defaults to 'snooze' when dialog times out (gave up:true)."""
+        self.reboot.dry_run = False
+        self.reboot.snoozes_left = 3
+        with patch.object(
+            self.reboot, 'play_chime',
+        ) as mock_chime, patch(
+            'freshenmac.boot.util.RunAppleScript.dialog',
+            return_value=make_ascript(stdout='gave up:true'),
+        ) as mock_dialog:
+            choice = self.reboot.prompt_initial()
+            self.assertEqual(choice, 'snooze')
+            self.assertEqual(self.reboot.snoozes_left, 2)
+            mock_chime.assert_called_once_with('Ping')
+            mock_dialog.assert_called_once()
+            _, kwargs = mock_dialog.call_args
+            self.assertEqual(kwargs.get('default_button'), 'Snooze')
 
     def test_prompt_retry_graceful_and_force(self):
         """Verifies prompt_retry maps dialog button clicks to 'graceful' or 'force'."""

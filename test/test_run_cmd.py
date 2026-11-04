@@ -1,5 +1,4 @@
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,6 +32,25 @@ class TestLogging(unittest.TestCase):
     Stage 5: graceful disable with warning
     """
 
+    def setUp(self):
+        """Mock directory creation and file writes in memory so no files are touched on disk."""
+        self.files: dict[Path, str] = {}
+        mkdir_patcher = patch.object(Path, 'mkdir')
+        mkdir_patcher.start()
+        self.addCleanup(mkdir_patcher.stop)
+
+        def fake_open(path, mode='r', **kwargs):
+            target = Path(path)
+            mock_f = MagicMock()
+            mock_f.__enter__.return_value = mock_f
+            mock_f.write.side_effect = lambda s: self.files.__setitem__(target, self.files.get(target, '') + s)
+            return mock_f
+
+        self.fake_open = fake_open
+        open_patcher = patch('builtins.open', side_effect=fake_open)
+        open_patcher.start()
+        self.addCleanup(open_patcher.stop)
+
     def test_disable_logger_prints_and_sets_enabled_false(self):
         """Verifies _disable_logger sets enabled=False and prints human-readable warning."""
         # Arrange
@@ -58,30 +76,27 @@ class TestLogging(unittest.TestCase):
 
     def test_line_append_returns_exception(self):
         """Verifies _line_append returns the caught Exception when write fails."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
-            with patch('builtins.open', side_effect=PermissionError("Denied")):
-                res = logger._line_append("Failing line")
-                self.assertIsInstance(res, PermissionError)
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
+        with patch('builtins.open', side_effect=PermissionError("Denied")):
+            res = logger._line_append("Failing line")
+            self.assertIsInstance(res, PermissionError)
 
     def test_line_append_success(self):
         """Verifies _line_append appends formatted line and returns None on success."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
-            res = logger._line_append("Success line")
-            self.assertIsNone(res)
-            self.assertEqual(test_log.read_text(encoding='utf-8'), "Success line\n")
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
+        res = logger._line_append("Success line")
+        self.assertIsNone(res)
+        self.assertEqual(self.files[test_log], "Success line\n")
 
     def test_logger_dry_run_skips_file_write(self):
         """Verifies Logger instance ignores store calls when dry_run is True."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(dry_run=True, log_file=test_log)
-            self.assertFalse(logger.enabled)
-            logger.store("Dry run test", component='TestComp')
-            self.assertFalse(test_log.exists())
+        test_log = Path('/fake/test.log')
+        logger = Logger(dry_run=True, log_file=test_log)
+        self.assertFalse(logger.enabled)
+        logger.store("Dry run test", component='TestComp')
+        self.assertNotIn(test_log, self.files)
 
     def test_logger_is_disabled_for_default_log_under_unittest(self):
         """Verifies Logger disables writing to the default system log during unit test runs."""
@@ -90,25 +105,23 @@ class TestLogging(unittest.TestCase):
 
     def test_logger_permission_fallback(self):
         """Verifies Logger falls back to user log directory when system log gets PermissionError."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sys_log = Path(tmp_dir) / 'sys' / 'test.log'
-            user_log = Path(tmp_dir) / 'user' / 'test.log'
-            with patch.dict(PATHS['Log'], {'User': user_log}):
-                logger = Logger(log_file=sys_log)
-                real_open = open
+        sys_log = Path('/fake/sys/test.log')
+        user_log = Path('/fake/user/test.log')
+        with patch.dict(PATHS['Log'], {'User': user_log}):
+            logger = Logger(log_file=sys_log)
 
-                def mock_open(path, mode='r', **kwargs):
-                    if Path(path) == sys_log:
-                        raise PermissionError("Permission denied")
-                    return real_open(path, mode, **kwargs)
+            def mock_open(path, mode='r', **kwargs):
+                if Path(path) == sys_log:
+                    raise PermissionError("Permission denied")
+                return self.fake_open(path, mode, **kwargs)
 
-                with patch('builtins.open', side_effect=mock_open):
-                    logger.store("Fallback message", component='PermTest')
+            with patch('builtins.open', side_effect=mock_open):
+                logger.store("Fallback message", component='PermTest')
 
-                # Log redirected to user log
-                self.assertEqual(logger.target, user_log)
-                self.assertTrue(user_log.exists())
-                self.assertIn('[PermTest] Fallback message', user_log.read_text(encoding='utf-8'))
+            # Log redirected to user log
+            self.assertEqual(logger.target, user_log)
+            self.assertIn(user_log, self.files)
+            self.assertIn('[PermTest] Fallback message', self.files[user_log])
 
     def test_logger_print_outputs_to_stdout(self):
         """Verifies logger.printf outputs to standard stdout via builtins.print."""
@@ -119,161 +132,154 @@ class TestLogging(unittest.TestCase):
 
     def test_logger_print_store_calls_print_and_store(self):
         """Verifies logger.print_store outputs to stdout and persists to log file."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
-            with patch('builtins.print') as mock_print:
-                logger.print_store("Combined message", component='Combo')
-                mock_print.assert_called_once_with("Combined message")
-            self.assertTrue(test_log.exists())
-            self.assertIn('[Combo] Combined message', test_log.read_text(encoding='utf-8'))
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
+        with patch('builtins.print') as mock_print:
+            logger.print_store("Combined message", component='Combo')
+            mock_print.assert_called_once_with("Combined message")
+        self.assertIn(test_log, self.files)
+        self.assertIn('[Combo] Combined message', self.files[test_log])
 
     def test_logger_store_blank_and_empty_quote_filtering(self):
         """Verifies Logger.store filters empty lines and shell quotes while preserving symbol/indented lines."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
 
-            message = (
-                "line 1: regular text\n"
-                "\n"
-                "   \n"
-                "\t\n"
-                "''\n"
-                '""\n'
-                "[Warning] Some warning\n"
-                "  • bullet point\n"
-                "════ section header ════\n"
-            )
-            logger.store(message, component='FilterTest')
+        message = (
+            "line 1: regular text\n"
+            "\n"
+            "   \n"
+            "\t\n"
+            "''\n"
+            '""\n'
+            "[Warning] Some warning\n"
+            "  • bullet point\n"
+            "════ section header ════\n"
+        )
+        logger.store(message, component='FilterTest')
 
-            logged_content = test_log.read_text(encoding='utf-8')
-            lines = logged_content.splitlines()
+        logged_content = self.files[test_log]
+        lines = logged_content.splitlines()
 
-            # Should contain the 4 legitimate lines
-            self.assertEqual(len(lines), 4)
-            self.assertTrue(any('[FilterTest] line 1: regular text' in line for line in lines))
-            self.assertTrue(any('[FilterTest] [Warning] Some warning' in line for line in lines))
-            self.assertTrue(any('[FilterTest]   • bullet point' in line for line in lines))
-            self.assertTrue(any('[FilterTest] ════ section header ════' in line for line in lines))
-            # Should NOT contain empty lines or shell quotes
-            self.assertFalse(any("''" in line for line in lines))
-            self.assertFalse(any('""' in line for line in lines))
+        # Should contain the 4 legitimate lines
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(any('[FilterTest] line 1: regular text' in line for line in lines))
+        self.assertTrue(any('[FilterTest] [Warning] Some warning' in line for line in lines))
+        self.assertTrue(any('[FilterTest]   • bullet point' in line for line in lines))
+        self.assertTrue(any('[FilterTest] ════ section header ════' in line for line in lines))
+        # Should NOT contain empty lines or shell quotes
+        self.assertFalse(any("''" in line for line in lines))
+        self.assertFalse(any('""' in line for line in lines))
 
     def test_logger_stage2a_sudo_chmod_recovery(self):
         """Verifies stage 2a recovery attempts sudo touch && chmod 666 when write permission denied."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sys_log = Path(tmp_dir) / 'sys.log'
-            logger = Logger(log_file=sys_log)
-            call_count = 0
+        sys_log = Path('/fake/sys.log')
+        logger = Logger(log_file=sys_log)
+        call_count = 0
 
-            def fake_append(line):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    return PermissionError("Permission denied")
-                return None
+        def fake_append(line):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return PermissionError("Permission denied")
+            return None
 
-            with patch.object(
-                RunCMD, 'can_sudo', return_value=True,
-            ), patch(
-                'freshenmac.util.RunCMD',
-            ) as mock_run_cmd, patch.object(
-                logger, '_line_append', side_effect=fake_append,
-            ):
-                # Act
-                logger._write_line("Privileged line")
+        with patch.object(
+            RunCMD, 'can_sudo', return_value=True,
+        ), patch(
+            'freshenmac.util.RunCMD',
+        ) as mock_run_cmd, patch.object(
+            logger, '_line_append', side_effect=fake_append,
+        ):
+            # Act
+            logger._write_line("Privileged line")
 
-                # Assert: executed touch && chmod with root privileges
-                mock_run_cmd.assert_called_with(
-                    ['sh', '-c', f"touch '{sys_log}' && chmod 666 '{sys_log}'"],
-                    need_root=True,
-                )
-                self.assertEqual(call_count, 2)
-                self.assertEqual(logger.target, sys_log)
-                self.assertTrue(logger.enabled)
+            # Assert: executed touch && chmod with root privileges
+            mock_run_cmd.assert_called_with(
+                ['sh', '-c', f"touch '{sys_log}' && chmod 666 '{sys_log}'"],
+                need_root=True,
+            )
+            self.assertEqual(call_count, 2)
+            self.assertEqual(logger.target, sys_log)
+            self.assertTrue(logger.enabled)
 
     def test_logger_stage2b_sudo_tee_append(self):
         """Verifies stage 2b recovery pipes input to sudo tee -a if chmod 666 fails."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sys_log = Path(tmp_dir) / 'sys.log'
-            logger = Logger(log_file=sys_log)
-            mock_cmd = MagicMock(returncode=0)
+        sys_log = Path('/fake/sys.log')
+        logger = Logger(log_file=sys_log)
+        mock_cmd = MagicMock(returncode=0)
 
-            with patch.object(
-                RunCMD, 'can_sudo', return_value=True,
-            ), patch(
-                'freshenmac.util.RunCMD', return_value=mock_cmd,
-            ) as mock_run_cmd, patch.object(
-                logger, '_line_append', return_value=PermissionError("Permission denied"),
-            ):
-                # Act
-                logger._write_line("Tee line")
+        with patch.object(
+            RunCMD, 'can_sudo', return_value=True,
+        ), patch(
+            'freshenmac.util.RunCMD', return_value=mock_cmd,
+        ) as mock_run_cmd, patch.object(
+            logger, '_line_append', return_value=PermissionError("Permission denied"),
+        ):
+            # Act
+            logger._write_line("Tee line")
 
-                # Assert: piped line to sudo tee -a
-                mock_run_cmd.assert_any_call(
-                    ['tee', '-a', str(sys_log)],
-                    to_input="Tee line\n",
-                    need_root=True,
-                )
-                self.assertEqual(logger.target, sys_log)
-                self.assertTrue(logger.enabled)
+            # Assert: piped line to sudo tee -a
+            mock_run_cmd.assert_any_call(
+                ['tee', '-a', str(sys_log)],
+                to_input="Tee line\n",
+                need_root=True,
+            )
+            self.assertEqual(logger.target, sys_log)
+            self.assertTrue(logger.enabled)
 
     def test_logger_stage4_var_tmp_fallback(self):
         """Verifies stage 4 emergency fallback redirects to /var/tmp when user directory is inaccessible."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sys_log = Path(tmp_dir) / 'sys.log'
-            user_log = Path(tmp_dir) / 'user.log'
-            var_tmp_log = Path('/var/tmp') / user_log.name
-            logger = Logger(log_file=sys_log)
+        sys_log = Path('/fake/sys.log')
+        user_log = Path('/fake/user.log')
+        var_tmp_log = Path('/var/tmp') / user_log.name
+        logger = Logger(log_file=sys_log)
 
-            def fake_append(line):
-                if logger.target != var_tmp_log:
-                    return PermissionError("Permission denied")
-                return None
+        def fake_append(line):
+            if logger.target != var_tmp_log:
+                return PermissionError("Permission denied")
+            return None
 
-            with patch.object(
-                RunCMD, 'can_sudo', return_value=False,
-            ), patch.dict(
-                PATHS['Log'], {'User': user_log},
-            ), patch.object(
-                logger, '_line_append', side_effect=fake_append,
-            ):
-                # Act
-                logger._write_line("Emergency message")
+        with patch.object(
+            RunCMD, 'can_sudo', return_value=False,
+        ), patch.dict(
+            PATHS['Log'], {'User': user_log},
+        ), patch.object(
+            logger, '_line_append', side_effect=fake_append,
+        ):
+            # Act
+            logger._write_line("Emergency message")
 
-                # Assert: redirected to /var/tmp
-                self.assertEqual(logger.target, var_tmp_log)
-                self.assertTrue(logger.enabled)
+            # Assert: redirected to /var/tmp
+            self.assertEqual(logger.target, var_tmp_log)
+            self.assertTrue(logger.enabled)
 
     def test_logger_stage5_disable_logging(self):
         """Verifies stage 5 disables logger when all fallback directories fail."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
-            with patch.object(
-                RunCMD, 'can_sudo', return_value=False,
-            ), patch.object(
-                logger, '_line_append', return_value=PermissionError("Permission denied"),
-            ), patch.object(
-                logger, '_disable_logger',
-            ) as mock_disable:
-                # Act
-                logger._write_line("Failing all stages")
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
+        with patch.object(
+            RunCMD, 'can_sudo', return_value=False,
+        ), patch.object(
+            logger, '_line_append', return_value=PermissionError("Permission denied"),
+        ), patch.object(
+            logger, '_disable_logger',
+        ) as mock_disable:
+            # Act
+            logger._write_line("Failing all stages")
 
-                # Assert: disabled cleanly
-                mock_disable.assert_called_once()
+            # Assert: disabled cleanly
+            mock_disable.assert_called_once()
 
     def test_logger_store_writes_formatted_lines(self):
         """Verifies logger.store writes timestamped and component-tagged lines."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            test_log = Path(tmp_dir) / 'test.log'
-            logger = Logger(log_file=test_log)
-            logger.store("Line A\nLine B", component='StoreComp')
-            self.assertTrue(test_log.exists())
-            content = test_log.read_text(encoding='utf-8')
-            self.assertIn('[StoreComp] Line A', content)
-            self.assertIn('[StoreComp] Line B', content)
+        test_log = Path('/fake/test.log')
+        logger = Logger(log_file=test_log)
+        logger.store("Line A\nLine B", component='StoreComp')
+        self.assertIn(test_log, self.files)
+        content = self.files[test_log]
+        self.assertIn('[StoreComp] Line A', content)
+        self.assertIn('[StoreComp] Line B', content)
 
 
 class TestPlaySound(unittest.TestCase):
@@ -407,11 +413,13 @@ class TestRunAppleScript(unittest.TestCase):
                 title='FreshenMac',
             )
             expected = (
-                'tell application "System Events"\n'
-                '    activate\n'
-                '    display dialog "System update ready" buttons {"Cancel", "OK"} '
+                'with timeout of 40 seconds\n'
+                '    tell application "System Events"\n'
+                '        activate\n'
+                '        display dialog "System update ready" buttons {"Cancel", "OK"} '
                 'default button "OK" giving up after 30 with icon stop with title "FreshenMac"\n'
-                'end tell'
+                '    end tell\n'
+                'end timeout'
             )
             self.assertEqual(dlg.script, expected)
             self.assertEqual(dlg.timeout, 40)
@@ -425,19 +433,6 @@ class TestRunAppleScript(unittest.TestCase):
             )
             ascript = RunAppleScript(['tell application "Finder"', 'activate', 'end tell'])
             self.assertEqual(ascript.script, 'tell application "Finder"\nactivate\nend tell')
-
-    def test_notify_classmethod(self):
-        """Verifies RunAppleScript.notify constructs display notification script."""
-        with patch('subprocess.Popen') as mock_popen:
-            res = RunAppleScript.notify(
-                "Maintenance complete",
-                subtitle="All tasks passed",
-                title="FreshenMac",
-            )
-            expected = 'display notification "Maintenance complete" with title "FreshenMac" subtitle "All tasks passed"'
-            self.assertEqual(res.script, expected)
-            mock_popen.assert_called_once_with(['osascript', '-e', expected])
-            self.assertTrue(res.background)
 
     def test_sync_run_exception(self):
         """Verifies OSError during execution returns returncode -70 and sets error attribute."""
@@ -541,7 +536,6 @@ class TestRunCMD(unittest.TestCase):
             cmd = RunCMD(['long_running_task'], timeout=1800, cancelable=True)
             self.assertFalse(bool(cmd))
             self.assertEqual(cmd.returncode, 130)
-            self.assertTrue(cmd.canceled)
             self.assertIn('canceled by user', cmd.stderr)
 
     def test_debug_limit_default_and_custom(self):
@@ -721,8 +715,6 @@ class TestRunCMD(unittest.TestCase):
             self.assertFalse(bool(cmd))
             self.assertEqual(cmd.returncode, RETURNCODE['Timeout'])
             self.assertIn('timed out', cmd.stderr)
-            self.assertIsNotNone(cmd.error_info)
-            self.assertEqual(cmd.error_info['timeout'], 1)
 
 
 class TestRunner(unittest.TestCase):
@@ -754,25 +746,12 @@ class TestRunner(unittest.TestCase):
         runner.stop()
         self.assertEqual(result, [15])
 
-    def test_is_alive_property(self):
-        """Verifies is_alive reflects the state of the active worker thread."""
-        runner = Runner(target=lambda: None)
-        self.assertFalse(runner.is_alive)
-        with patch('threading.Thread') as mock_thread_cls:
-            mock_thread = mock_thread_cls.return_value
-            mock_thread.is_alive.return_value = True
-            runner.start()
-            self.assertTrue(runner.is_alive)
-            runner.stop()
-            self.assertFalse(runner.is_alive)
-
     def test_start_skipped_when_bool_condition_false(self):
         """Verifies thread start is skipped when condition is False."""
         executed = []
         runner = Runner(target=lambda: executed.append(True), condition=False)
         runner.start()
         self.assertIsNone(runner._thread)
-        self.assertFalse(runner.is_alive)
         runner.stop()
         self.assertEqual(executed, [])
 
@@ -782,7 +761,6 @@ class TestRunner(unittest.TestCase):
         runner = Runner(target=lambda: executed.append(True), condition=lambda: False)
         runner.start()
         self.assertIsNone(runner._thread)
-        self.assertFalse(runner.is_alive)
         runner.stop()
         self.assertEqual(executed, [])
 
@@ -837,7 +815,7 @@ class TestSudoKeepAlive(unittest.TestCase):
     def test_context_manager(self):
         """Verifies SudoKeepAlive starts background thread on enter and terminates on exit."""
         with patch.object(SudoKeepAlive, 'start',) as mock_start, patch.object(SudoKeepAlive, 'stop',) as mock_stop:
-            with SudoKeepAlive(interval=10) as keepalive:
+            with SudoKeepAlive(interval_seconds=10) as keepalive:
                 self.assertIsInstance(keepalive, SudoKeepAlive)
                 mock_start.assert_called_once()
                 mock_stop.assert_not_called()
@@ -845,7 +823,7 @@ class TestSudoKeepAlive(unittest.TestCase):
 
     def test_keepalive_refreshes_sudo(self):
         """Verifies _keepalive executes sudo -n -v when can_sudo is True."""
-        keepalive = SudoKeepAlive(interval=1)
+        keepalive = SudoKeepAlive(interval_seconds=1)
         with patch.object(
             keepalive._stop_event, 'wait', side_effect=[False, True],
         ), patch(
@@ -857,7 +835,7 @@ class TestSudoKeepAlive(unittest.TestCase):
 
     def test_keepalive_skips_refresh_when_cannot_sudo(self):
         """Verifies _keepalive skips command execution when can_sudo is False."""
-        keepalive = SudoKeepAlive(interval=1)
+        keepalive = SudoKeepAlive(interval_seconds=1)
         with patch.object(
             keepalive._stop_event, 'wait', side_effect=[False, True],
         ), patch(
@@ -869,7 +847,7 @@ class TestSudoKeepAlive(unittest.TestCase):
 
     def test_start_and_stop(self):
         """Verifies start spawns background worker thread and stop terminates it cleanly."""
-        keepalive = SudoKeepAlive(interval=1)
+        keepalive = SudoKeepAlive(interval_seconds=1)
         keepalive.start()
         self.assertIsNotNone(keepalive._thread)
         self.assertTrue(keepalive._thread.is_alive())

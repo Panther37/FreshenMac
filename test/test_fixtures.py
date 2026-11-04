@@ -1,16 +1,31 @@
+import json
+import plistlib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from freshenmac.homebrew import HomeBrew
+from freshenmac.plist import CronSchedule, LaunchAgent, SavePreferences, StartupRun, load_preferences
+from freshenmac.softwareupdate import SoftwareUpdate
 from test.sim_run_cmd import SimRunCMD
 
 FIXTURES_DIR = Path(__file__).resolve().parent / 'fixtures'
 BREW_FIXTURES_DIR = FIXTURES_DIR / 'brew'
+PLIST_FIXTURES_DIR = FIXTURES_DIR / 'plist'
 
 CLEANUP_FIXTURE = BREW_FIXTURES_DIR / 'cleanup' / '20261012-1426'
 OUTDATED_FIXTURE = BREW_FIXTURES_DIR / 'outdated' / '20261023-2233'
 REPOSITORY_FIXTURE = BREW_FIXTURES_DIR / 'repository' / '20261012-1424'
 UPDATE_FORCE_FIXTURE = BREW_FIXTURES_DIR / 'update' / 'force' / '20261026-1159'
+
+
+def load_plist_datasets() -> dict[str, dict]:
+    """Loads attributes.json from each plist fixture directory."""
+    return {
+        d.name: json.loads((d / 'attributes.json').read_text(encoding='utf-8'))
+        for d in sorted(PLIST_FIXTURES_DIR.iterdir())
+        if d.is_dir() and (d / 'attributes.json').is_file()
+    }
 
 
 class TestFixtures(unittest.TestCase):
@@ -64,20 +79,106 @@ class TestFixtures(unittest.TestCase):
         self.assertIn('You have 87 outdated formulae and 1 outdated cask installed.', sim.stderr)
         self.assertIn('Warning: Not automatically tapping zarf-dev/tap', sim.stderr)
 
-    def test_load_all_standard_fixtures(self):
-        """Verifies all standard fixtures load successfully through SimRunCMD.load."""
-        expected_fixtures = [
-            CLEANUP_FIXTURE,
-            OUTDATED_FIXTURE,
-            REPOSITORY_FIXTURE,
-            UPDATE_FORCE_FIXTURE,
-        ]
-        for fixture_path in expected_fixtures:
-            self.assertTrue(fixture_path.is_dir(), f"Fixture directory missing: {fixture_path}")
-            sim = SimRunCMD.load(fixture_path)
-            self.assertEqual(sim.returncode, 0)
-            self.assertTrue(bool(sim))
-            self.assertTrue(sim.cmd_str)
+    def test_plist_launch_agent(self):
+        """Runs LaunchAgent.build_plist_data() across plist fixture sets and compares against golden truth."""
+        for k, v in load_plist_datasets().items():
+            with self.subTest(dataset=k):
+                fixture_dir = PLIST_FIXTURES_DIR / k
+                pref_plist_path = fixture_dir / 'com.panther37.FreshenMac.plist'
+                truth_plist = (fixture_dir / 'launch_agent.plist').read_bytes()
+                plist_json = json.loads((fixture_dir / 'plist.json').read_text(encoding='utf-8'))
+                truth_json = plist_json['launch_agent.plist']
+
+                with patch.dict(
+                    'freshenmac.config.PATHS',
+                    {'Prefs': {'Default': pref_plist_path, 'User': fixture_dir / 'nonexistent.plist'}},
+                ):
+                    agent = LaunchAgent(target_script=Path(v['target_script']), dry_run=True)
+                    agent.python_bin = '/usr/local/bin/python3'
+                    actual_plist = agent.build_plist_data()
+
+                self.assertEqual(plistlib.loads(actual_plist), truth_json, k)
+                self.assertEqual(actual_plist, truth_plist, k)
+
+    def test_plist_preferences(self):
+        """Runs SavePreferences, load_preferences, and CronSchedule across plist fixture sets against golden truth."""
+        for k, v in load_plist_datasets().items():
+            with self.subTest(dataset=k):
+                fixture_dir = PLIST_FIXTURES_DIR / k
+                pref_plist_path = fixture_dir / 'com.panther37.FreshenMac.plist'
+                truth_plist = pref_plist_path.read_bytes()
+                plist_json = json.loads((fixture_dir / 'plist.json').read_text(encoding='utf-8'))
+                truth_json = plist_json['com.panther37.FreshenMac.plist']
+
+                # 1. Input -> SavePreferences -> compare against golden JSON and plist
+                pref = SavePreferences({'no-mas': v['no-mas'], 'schedule': v['schedule']}, dry_run=True)
+                self.assertEqual(pref.updates, truth_json, k)
+                self.assertEqual(plistlib.dumps(pref.updates), truth_plist, k)
+
+                # 2. Golden plist -> load_preferences() -> compare against golden JSON
+                with patch.dict(
+                    'freshenmac.config.PATHS',
+                    {'Prefs': {'Default': pref_plist_path, 'User': fixture_dir / 'nonexistent.plist'}},
+                ):
+                    loaded = load_preferences()
+                self.assertEqual(loaded, truth_json, k)
+
+                # 3. Golden schedule -> CronSchedule.parse().to_cron() -> round-trips back to input cron string
+                sched = CronSchedule.parse(loaded['schedule'])
+                self.assertEqual(sched.to_cron(), v['schedule'], k)
+
+    def test_plist_staged_updates(self):
+        """Runs SoftwareUpdate.check_staged_reboot() against index.plist fixture sets and verifies expected count."""
+        for k, v in load_plist_datasets().items():
+            with self.subTest(dataset=k):
+                fixture_dir = PLIST_FIXTURES_DIR / k
+                index_file = fixture_dir / 'index.plist'
+                truth_plist = index_file.read_bytes()
+                plist_json = json.loads((fixture_dir / 'plist.json').read_text(encoding='utf-8'))
+                truth_json = plist_json['index.plist']
+
+                self.assertEqual(plistlib.loads(truth_plist), truth_json, k)
+
+                with patch(
+                    'freshenmac.softwareupdate.Path.is_file',
+                    return_value=True,
+                ), patch(
+                    'freshenmac.softwareupdate.open',
+                    side_effect=lambda *args, **kwargs: open(index_file, 'rb'),
+                ), patch(
+                    'freshenmac.softwareupdate.Path.exists',
+                    autospec=True,
+                    side_effect=lambda p: p.parent.name in v['staged_dirs'],
+                ), patch(
+                    'freshenmac.softwareupdate.Path.is_dir',
+                    autospec=True,
+                    side_effect=lambda p: p.name in v['staged_dirs'],
+                ):
+                    actual_count = SoftwareUpdate.check_staged_reboot()
+
+                self.assertEqual(actual_count, v['staged_expected'], k)
+
+    def test_plist_startup_run(self):
+        """Runs StartupRun.agent.build_plist_data() across plist fixture sets and compares against golden truth."""
+        for k, v in load_plist_datasets().items():
+            with self.subTest(dataset=k):
+                fixture_dir = PLIST_FIXTURES_DIR / k
+                truth_plist = (fixture_dir / 'com.panther37.FreshenMac_runonce.plist').read_bytes()
+                plist_json = json.loads((fixture_dir / 'plist.json').read_text(encoding='utf-8'))
+                truth_json = plist_json['com.panther37.FreshenMac_runonce.plist']
+
+                user_home = Path(v['user_home'])
+                startup = StartupRun(
+                    dry_run=True,
+                    launch_agents_dir=user_home / 'Library/LaunchAgents',
+                    log_dir=user_home / 'Library/Logs',
+                )
+                startup.agent.target_script = Path(v['target_script'])
+                startup.agent.python_bin = '/usr/local/bin/python3'
+                actual_plist = startup.agent.build_plist_data()
+
+                self.assertEqual(plistlib.loads(actual_plist), truth_json, k)
+                self.assertEqual(actual_plist, truth_plist, k)
 
 
 if __name__ == '__main__':

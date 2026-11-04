@@ -6,7 +6,122 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Please wrap at 120 characters.
 
-## [Unreleased] - `main`
+## [2.0.0] - 2026-11-03
+
+### Added
+- Added dynamic Apple Software Update download timeouts via `SoftwareUpdate.calculate_timeout()` and
+  `SoftwareUpdate.get_update_size_mb()` in `src/freshenmac/softwareupdate.py` using configured `download_speed_mbps`
+  and `'Software Update'` section in `config.TIMEOUT`.
+- Added Homebrew Cask installation and management instructions to Quick Start in `README.md`.
+- Added `HomeBrew.self_update_freshenmac()` in `src/freshenmac/homebrew.py` to check for and apply FreshenMac cask
+  updates as Step 0 before performing any other software updates ([#23]).
+- Added `download-speed` preference key in `src/freshenmac/plist.py` (`SavePreferences.SCHEMA`) to configure minimum
+  expected download speed for dynamic Mac App Store timeouts.
+- Added dynamic Homebrew Cask download timeouts via `HomeBrew.calculate_cask_timeout()` and
+  `HomeBrew.get_cask_size_mb()` in `src/freshenmac/homebrew.py` based on `download-speed` preferences.
+- Added dynamic MAS timeouts via `AppStore.calculate_timeout()` and `AppStore.get_app_size_mb()` in
+  `src/freshenmac/mas.py` using configurable download speed (default 5.0 Mbps) plus a 25% safety buffer.
+- Added Reboot Windows architectural exploration and future specification in `plans/todo/reboot_windows.md`.
+- Added AI context documentation in `.ai/` (`README.md`, `ARCHITECTURE.md`, `MODULES.md`, `WORKFLOWS.md`, and
+  `CONVENTIONS.md`) and Homebrew Cask self-update architecture plan in `plans/self_update_homebrew_cask_plan.md`.
+- Added `LaunchAgent.console_uid` and `LaunchAgent.target_script` properties in `src/freshenmac/plist.py` to resolve
+  the active console user's UID under `sudo` and locate the Homebrew `freshenmac` CLI binary from
+  `PATHS['Script']['Target']`.
+- Added `test_jump_statements_followed_by_empty_line` (`P37-JUMP_LINE`) in `test/test_architecture.py` to enforce empty
+  lines after `break`, `continue`, `pass`, `raise`, `return`, and `yield` statements, and inline comments on `pass`.
+- Added `test_timeout_all_values` in `test/test_architecture.py` to verify that `TIMEOUT['All']` bounds dynamically
+  match the maximum and minimum of all defined package manager timeouts in `src/freshenmac/config.py`.
+- Added golden truth integration tests and recorded plist datasets in `test/test_fixtures.py`
+  (`test_plist_launch_agent`, `test_plist_preferences`, `test_plist_staged_updates`, `test_plist_startup_run`).
+- Added visual `--action Spinner` and `--action Wave` options in `src/freshenmac/main.py` for interactive progress
+  spinner inspection.
+- Added `util.get_running_gui_apps()` to query System Events once in batch for active GUI applications, with
+  pre-fetched process caching in `AppStore.update()`.
+- Added pending update enumeration in `Boot.prompt_initial()` to list specific staged macOS updates and Apple software
+  in the user reboot confirmation dialog.
+- Added reboot suggestions in `AppStore.update()` (`src/freshenmac/mas.py`) for deferred running apps and
+  upgrade caveats.
+- Added regression tests in `test/test_homebrew.py`, `test/test_mac_computer.py`, and `test/test_reboot.py` for
+  duplicate upgrade suppression, in-place version caching, and reboot dialog update lists.
+
+### Changed
+- Updated `Reboot.prompt_initial()` in `src/freshenmac/boot.py` to default the initial reboot prompt to "Snooze" instead
+  of "Restart Now" and route dialog timeouts (`gave up:true`) to the snooze flow rather than force-rebooting.
+- Converted `MacOS.app_store` and `MacOS.softwareupdate` into lazy `@cached_property` properties in
+  `src/freshenmac/computer.py`, passing `download_speed_mbps` to all worker instances.
+- Standardized `download_speed` and `download_speed_mbps` across `MacOS`, `AppStore`, `HomeBrew`, and
+  `SoftwareUpdate` to strictly typed `float = 0.0`.
+- Restructured `TIMEOUT` in `src/freshenmac/config.py` into typed, nested sections (`App Store` and `Homebrew`) with
+  human-readable duration comments, dedicated CMake compile timeouts (3 hours), and dynamic cask timeouts.
+- Renamed CLI argument `--save-prefs` to `--save-pref` in `src/freshenmac/main.py` and `src/freshenmac/plist.py` (with
+  backward-compatible `--save-prefs` CLI alias support) and documented preference options in `README.md`.
+- Updated `Reboot.graceful_restart()` in `src/freshenmac/boot.py` to trigger
+  `softwareupdate --install <label> --restart` with 5-minute `fdesetup authrestart` priming when macOS updates are
+  staged to disk.
+- Updated `LaunchAgent._install_privileged()` in `src/freshenmac/plist.py` to pre-create `/Library/Logs/FreshenMac.log`
+  with ownership `root:admin` and permissions `0664`.
+- Updated `HomeBrew._upgrade_casks()` to exclude `freshenmac` from general cask upgrades since it is updated prior to
+  the update run.
+- Pointed `LaunchAgent` directly at Homebrew's `freshenmac` executable (`PATHS['Script']['Target']`) and removed
+  `PackageSync`, `check_plist()`, `file_needs_update()`, `get_file_build()`, and `/Library/scripts/User/freshenmac`
+  file-copying logic from `src/freshenmac/plist.py` and `src/freshenmac/main.py`.
+- Replaced `brew info --json=v2` dependency chunking in `HomeBrew._get_cmake_formulae()` with native
+  `brew deps --direct --include-build --for-each` inspection parsed via `RunCMD.parse_dict()`.
+- Removed redundant `brew list --cask --versions` subprocess execution in `HomeBrew.snapshot_installed()` and warmed
+  `self.brew_list` during initial snapshot to eliminate duplicate `brew list --versions` calls.
+- Updated `HomeBrew._resolve_and_update_dependencies()` to maintain `self.brew_list` in place rather than
+  invalidating the cached property.
+- Streamlined `HomeBrew.self_update_freshenmac()` to inspect the consolidated `brew outdated --json=v2` results,
+  eliminating redundant subprocess invocations and stale tap metadata races.
+- Refactored pending reboot update gathering in `Reboot._get_pending_updates()` (`src/freshenmac/boot.py`), replacing
+  nested `hasattr` checks with direct attribute lookups and introducing clear deduplication logic.
+- Standardized `AppStore.get_app_size_mb()` (`src/freshenmac/mas.py`) and `HomeBrew.get_cask_size_mb()`
+  (`src/freshenmac/homebrew.py`) to return `float` with `0.0` for unavailable sizes, checking `size_mb == 0.0`.
+- Removed `None` returns in favor of typed empty sentinels across multiple core properties and helper methods:
+  `MacOS.pending_os_update` (`str`, returns `""`), `Xcode.xcodebuild_path` (`Path`, returns `Path('')`),
+  `SavePreferences._parse()` and `SavePreferences._normalize()` (`dict`, returns `{}`), and
+  `LaunchAgent._prepare_sudoers_commands()` (`tuple[list[str], Path]`, returns `([], Path(''))`).
+- Updated `HomeBrew.update()`, `AppStore.update()`, `SoftwareUpdate.update()`, and `MacOS.update()` to return `bool`
+  indicating whether updates were performed, eliminating stateful attribute inspections in `MacOS._update_brew()`,
+  `MacOS._update_mas()`, and `MacOS._update_os()`.
+- Standardized `ignore_mas` to `set[str]` across `MacOS`, `AppStore`, and CLI rule parsing in `main.py`, eliminating
+  duplicate app names and numeric IDs.
+- Bumped FreshenMac version to 2.0.0 in `src/freshenmac/config.py` (`APP_INFO['Version']`).
+- Renamed `SudoKeepAlive` parameter `interval` to `interval_seconds` in `src/freshenmac/util.py`.
+- Refactored `CronSchedule` integer parsing into `_parse_part()` in `src/freshenmac/plist.py` with Sunday day
+  normalization (7 to 0).
+- Optimized `SimRunCMD.save_folder()` in `test/sim_run_cmd.py` to inline `stdout` and `stderr` into `attributes.json`
+  for outputs under 80 characters.
+- Refactored `TestLogging` in `test/test_run_cmd.py` to mock directory creation and file writes in-memory, eliminating
+  disk I/O and temporary directory overhead during test execution.
+
+### Removed
+- Removed dictionary subscript access (`__getitem__` and `__setitem__`) from `ActionState` in `src/freshenmac/boot.py`.
+- Removed `--action Update` choice from `src/freshenmac/main.py` (supporting `Install`, `Uninstall`, `Spinner`, `Wave`).
+- Removed duplicate `MacOS.notify_manual_os_update()` from `src/freshenmac/computer.py` and consolidated notification
+  logic into `SoftwareUpdate.notify_manual()` in `src/freshenmac/softwareupdate.py`.
+- Removed unused `DeferState` dataclass from `src/freshenmac/boot.py` and obsolete `self.defer` tracking in
+  `src/freshenmac/mas.py`.
+- Removed unused `RunAppleScript.notify()` from `src/freshenmac/util.py`.
+- Removed unused `RunCMD.error_info` dictionary and helper `_read_bytes()` from `src/freshenmac/util.py`.
+- Removed unused `Runner.is_alive` property and `RunCMD.canceled` attribute from `src/freshenmac/util.py`.
+- Removed unused `RebootState.requested` attribute from `src/freshenmac/boot.py`.
+- Removed redundant `TestFixtures.test_load_all_standard_fixtures` from `test/test_fixtures.py` and non-deterministic,
+  unmocked `TestMacOS.test_is_app_running_real_finder` from `test/test_mac_computer.py`.
+
+### Fixed
+- Fixed `RunAppleScript.dialog()` in `src/freshenmac/util.py` to wrap System Events dialog execution in
+  `with timeout of ... seconds`, preventing AppleScript -1712 AppleEvent timeouts on long-duration prompts.
+- Fixed silent AppleScript dialog failure loop in `Reboot.prompt_initial()` by recognizing idle system state and
+  rebooting immediately instead of falling into a 3-hour snooze when locked or headless.
+- Fixed `Reboot.prompt_initial()` error logging to properly capture `dialog_cmd.stderr or dialog_cmd.error`.
+- Fixed `LaunchAgent.install()` in `src/freshenmac/plist.py` skipping `/etc/sudoers.d/freshenmac` setup and targeting
+  `gui/0` when invoked as `root` via `sudo`.
+- Fixed modern macOS Sequoia update download detection in `SoftwareUpdate._update_macos()` by broadening
+  `PATTERN['Downloaded Ver']` and adding fallbacks for `Downloading: 100.00%` and returncode completion.
+- Fixed `MacOS.print_summary()` reporting macOS as `(up to date)` when a newer version has been staged to disk.
+- Fixed duplicate `brew upgrade` attempts on packages previously upgraded as dependencies in `_upgrade_formula()` and
+  `_upgrade_cmake_formulae()`.
 
 ## [1.5.0] - 2026-10-27
 
@@ -94,7 +209,7 @@ Please wrap at 120 characters.
 ### Added
 - Initial release.
 
-[Unreleased]: https://github.com/Panther37/FreshenMac/compare/v1.5.0...HEAD
+[2.0.0]: https://github.com/Panther37/FreshenMac/compare/v1.5.0...v2.0.0
 [1.5.0]: https://github.com/Panther37/FreshenMac/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/Panther37/FreshenMac/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/Panther37/FreshenMac/compare/v1.4.0...v1.4.1

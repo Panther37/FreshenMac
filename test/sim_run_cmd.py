@@ -89,20 +89,19 @@ class SimRunCMD(RunCMD):
         self.stderr: str = stderr
         self.stdout: str = stdout
 
-        # Default / unused RunCMD attributes initialized for full protocol compatibility
-        self.cancelable: bool = False
-        self.canceled: bool = self.returncode == 130
-        self.debug: int = 0
-        self.debug_limit: int = 0
-        self.download: bool = False
-        self.environ: dict[str, str] = {}
-        self.initial_need_root: bool = self.need_root
-        self.interactive: bool = False
-        self.permissions_checked: bool = True
-        self.shell_cmd: str | None = None
-        self.spinner: bool = False
-        self.timeout: int = 0
-        self.to_input: str | None = None
+        # # Default / unused RunCMD attributes initialized for full protocol compatibility
+        # self.cancelable: bool = False
+        # self.debug: int = 0
+        # self.debug_limit: int = 0
+        # self.download: bool = False
+        # self.environ: dict[str, str] = {}
+        # self.initial_need_root: bool = self.need_root
+        # self.interactive: bool = False
+        # self.permissions_checked: bool = True
+        # self.shell_cmd: str | None = None
+        # self.spinner: bool = False
+        # self.timeout: int = 0
+        # self.to_input: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SimRunCMD:
@@ -220,19 +219,21 @@ class SimRunCMD(RunCMD):
         target = Path(folder_path)
         target.mkdir(parents=True, exist_ok=True)
         attributes = self.to_dict()
-        attributes.update({'stderr': 'See stderr.txt', 'stdout': 'See stdout.txt'})
-
+        # `repr_std*` probably not needed
+        for output_type in ['stderr', 'stdout']:
+            some_text = getattr(self, output_type)
+            if some_text:
+                if len(some_text) > 80:
+                    attributes[output_type] = f"See {output_type}.txt"
+                    with open(target / f"repr_{output_type}.txt", 'w', encoding='utf-8') as f:
+                        f.write(repr(some_text))
+                    with open(target / f"{output_type}.txt", 'w', encoding='utf-8') as f:
+                        f.write(some_text)
+                else:
+                    attributes[output_type] = some_text
+        # attributes
         with open(target / 'attributes.json', 'w', encoding='utf-8') as f:
             json.dump(attributes, f, indent=2)
-        # `repr_std*` probably not needed
-        with open(target / 'repr_stderr.txt', 'w', encoding='utf-8') as f:
-            f.write(repr(self.stderr))
-        with open(target / 'repr_stdout.txt', 'w', encoding='utf-8') as f:
-            f.write(repr(self.stdout))
-        with open(target / 'stderr.txt', 'w', encoding='utf-8') as f:
-            f.write(self.stderr)
-        with open(target / 'stdout.txt', 'w', encoding='utf-8') as f:
-            f.write(self.stdout)
         return target
 
     def to_dict(self) -> dict[str, Any]:

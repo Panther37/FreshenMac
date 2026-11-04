@@ -8,8 +8,8 @@ from freshenmac.main import (
     actions,
     main,
     yield_arguments,
+    yield_rules,
 )
-from freshenmac.plist import check_plist
 
 
 class TestTopLevelFunctions(unittest.TestCase):
@@ -32,21 +32,13 @@ class TestTopLevelFunctions(unittest.TestCase):
         self._can_sudo_patcher.stop()
 
     def test_actions(self):
-        """Verifies actions handles Install, Update, Uninstall, and unknown verbs."""
+        """Verifies actions handles Install, Uninstall, and unknown verbs."""
         # Install
         with patch(
             'freshenmac.plist.LaunchAgent.check_and_install', return_value=True,
-        ) as mock_agent, patch(
-            'freshenmac.plist.PackageSync.update_files', return_value=True,
-        ) as mock_sync:
+        ) as mock_agent:
             self.assertTrue(actions(argparse.Namespace(action='Install', debug_vars={'debug': 0, 'debug_limit': 0})))
             mock_agent.assert_called_once()
-            mock_sync.assert_called_once()
-
-        # Update
-        with patch('freshenmac.plist.PackageSync.update_files', return_value=True) as mock_sync:
-            self.assertTrue(actions(argparse.Namespace(action='Update', debug_vars={'debug': 0, 'debug_limit': 0})))
-            mock_sync.assert_called_once()
 
         # Uninstall
         with patch('freshenmac.plist.LaunchAgent.uninstall', return_value=True) as mock_uninstall:
@@ -55,16 +47,6 @@ class TestTopLevelFunctions(unittest.TestCase):
 
         # Unknown action
         self.assertFalse(actions(argparse.Namespace(action='NonExistent', dry_run=True)))
-
-    def test_check_plist_dry_run(self):
-        """Verifies check_plist delegates to LaunchAgent.check_and_install with dry_run flag."""
-        # Arrange & Act
-        with patch('freshenmac.plist.LaunchAgent.check_and_install', return_value=True) as mock_install:
-            result = check_plist(dry_run=True)
-
-            # Assert
-            self.assertTrue(result)
-            mock_install.assert_called_once()
 
     def test_main_action(self):
         """Verifies main delegates directly to actions() when --action is provided."""
@@ -87,9 +69,7 @@ class TestTopLevelFunctions(unittest.TestCase):
         with patch(
             'freshenmac.computer.MacOS',
         ) as mock_mac_cls, patch(
-            'freshenmac.plist.check_plist',
-        ), patch(
-            'freshenmac.plist.PackageSync.update_files',
+            'freshenmac.plist.LaunchAgent.check_and_install',
         ), patch(
             'sys.argv', ['freshenmac.py', '-r', 'force', '-l', '500'],
         ):
@@ -104,36 +84,34 @@ class TestTopLevelFunctions(unittest.TestCase):
                 console_user=ANY,
                 debug_vars={'debug': 2, 'debug_limit': 500},
                 force_reboot=True,
-                ignore_mas=None,
+                ignore_mas=set(),
                 logger=ANY,
                 user_password=ANY,
             )
             mock_mac.update.assert_called_once_with('all')
 
     def test_main_forwards_ignore_mas_to_macos(self):
-        """Verifies main forwards --ignore-mas list to MacOS constructor."""
+        """Verifies main forwards --ignore-mas set to MacOS constructor."""
         # Arrange
         with patch(
             'freshenmac.computer.MacOS',
         ) as mock_mac_cls, patch(
-            'freshenmac.plist.check_plist',
+            'freshenmac.plist.LaunchAgent.check_and_install',
         ), patch(
-            'freshenmac.plist.PackageSync.update_files',
-        ), patch(
-            'sys.argv', ['freshenmac.py', '--ignore-mas', 'Xcode', '497799835'],
+            'sys.argv', ['freshenmac.py', '--ignore-mas', 'Xcode', '497799835', 'Xcode'],
         ):
             mock_mac = mock_mac_cls.return_value
 
             # Act
             res = main()
 
-            # Assert: ignored apps list passed through
+            # Assert: ignored apps set passed through deduplicated
             self.assertTrue(res)
             mock_mac_cls.assert_called_once_with(
                 console_user=ANY,
                 debug_vars={'debug': 0, 'debug_limit': 0},
                 force_reboot=False,
-                ignore_mas=['Xcode', '497799835'],
+                ignore_mas={'Xcode', '497799835'},
                 logger=ANY,
                 user_password=ANY,
             )
@@ -160,15 +138,13 @@ class TestTopLevelFunctions(unittest.TestCase):
             mock_cmd.assert_called_with(['sudo', '-v'], interactive=True, timeout=120)
 
     def test_main_runs_update_and_continues(self):
-        """Verifies main checks for self-updates and proceeds to perform system updates."""
+        """Verifies main checks LaunchAgent and proceeds to perform system updates."""
         # Arrange
         with patch(
-            'freshenmac.plist.PackageSync.update_files',
-        ) as mock_update_script, patch(
             'freshenmac.computer.MacOS',
         ) as mock_mac_cls, patch(
-            'freshenmac.plist.check_plist',
-        ), patch(
+            'freshenmac.plist.LaunchAgent.check_and_install', return_value=True,
+        ) as mock_check_and_install, patch(
             'sys.argv', ['freshenmac.py'],
         ), patch(
             'sys.stdin.isatty', return_value=True,
@@ -180,16 +156,30 @@ class TestTopLevelFunctions(unittest.TestCase):
 
             # Assert
             self.assertTrue(res)
-            mock_update_script.assert_called_once_with()
+            mock_check_and_install.assert_called_once()
             mock_mac_cls.assert_called_once_with(
                 console_user=ANY,
                 debug_vars={'debug': 0, 'debug_limit': 0},
                 force_reboot=False,
-                ignore_mas=None,
+                ignore_mas=set(),
                 logger=ANY,
                 user_password=ANY,
             )
             mock_mac.update.assert_called_once_with('all')
+
+    def test_main_save_pref(self):
+        """Verifies main saves preference when --save-pref is passed."""
+        # Arrange & Act
+        with patch(
+            'freshenmac.plist.SavePreferences.save', return_value=True,
+        ) as mock_save, patch(
+            'sys.argv', ['freshenmac.py', '--save-pref', 'download-speed=10'],
+        ):
+            res = main()
+
+            # Assert
+            self.assertTrue(res)
+            mock_save.assert_called_once()
 
     def test_main_schedule(self):
         """Verifies main saves LaunchAgent schedule when valid cron expression is passed."""
@@ -236,8 +226,6 @@ class TestTopLevelFunctions(unittest.TestCase):
         ) as mock_wave_cls, patch(
             'freshenmac.main.sleep', side_effect=KeyboardInterrupt,
         ), patch(
-            'freshenmac.plist.PackageSync.update_files',
-        ) as mock_update_script, patch(
             'freshenmac.computer.MacOS',
         ) as mock_mac_cls, patch(
             'sys.argv', ['freshenmac.py', '--spinner'],
@@ -263,7 +251,6 @@ class TestTopLevelFunctions(unittest.TestCase):
                     ),
                 ],
             )
-            mock_update_script.assert_not_called()
             mock_mac_cls.assert_not_called()
 
     def test_main_with_some_options_list(self):
@@ -287,15 +274,13 @@ class TestTopLevelFunctions(unittest.TestCase):
             mock_spinner.assert_called_once()
 
     def test_main_without_update(self):
-        """Verifies -z/--standalone skips self-updating check but proceeds with system updates."""
+        """Verifies -z/--standalone skips LaunchAgent check but proceeds with system updates."""
         # Arrange
         with patch(
-            'freshenmac.plist.PackageSync.update_files',
-        ) as mock_update_script, patch(
             'freshenmac.computer.MacOS',
         ) as mock_mac_cls, patch(
-            'freshenmac.plist.check_plist',
-        ), patch(
+            'freshenmac.plist.LaunchAgent.check_and_install',
+        ) as mock_check_and_install, patch(
             'sys.argv', ['freshenmac.py', '--standalone'],
         ):
             mock_mac = mock_mac_cls.return_value
@@ -305,7 +290,7 @@ class TestTopLevelFunctions(unittest.TestCase):
 
             # Assert
             self.assertTrue(res)
-            mock_update_script.assert_not_called()
+            mock_check_and_install.assert_not_called()
             mock_mac.update.assert_called_once_with('all')
 
     def test_yield_arguments_action(self):
@@ -318,39 +303,29 @@ class TestTopLevelFunctions(unittest.TestCase):
             opts = yield_arguments()
             self.assertEqual(opts.action, 'Uninstall')
 
-        with patch('sys.argv', ['freshenmac.py', '--action', 'UPDATE']):
-            opts = yield_arguments()
-            self.assertEqual(opts.action, 'Update')
-
     def test_yield_arguments_default(self):
-        """Verifies yield_arguments parses default options in interactive and non-interactive sessions."""
-        # Interactive session (TTY attached)
-        with patch('sys.argv', ['freshenmac.py']), patch('freshenmac.util.is_interactive', return_value=True):
-            opts = yield_arguments()
+        """Verifies yield_arguments and yield_rules parse default options."""
+        with patch('sys.argv', ['freshenmac.py']):
+            opts = yield_rules(yield_arguments())
             self.assertIsNone(opts.action)
             self.assertEqual(opts.debug_vars, {'debug': 0, 'debug_limit': 0})
             self.assertEqual(opts.reboot, 0)
             self.assertFalse(opts.spinner)
-            self.assertTrue(opts.update)
-
-        # Non-interactive session (automated daemon execution defaults update=False)
-        with patch('sys.argv', ['freshenmac.py']), patch('freshenmac.util.is_interactive', return_value=False):
-            opts = yield_arguments()
-            self.assertFalse(opts.update)
+            self.assertFalse(opts.standalone)
 
     def test_yield_arguments_flags(self):
-        """Verifies yield_arguments parses short option flags (-r, -v, -z)."""
+        """Verifies yield_arguments and yield_rules parse short option flags (-r, -v, -z)."""
         with patch('sys.argv', ['freshenmac.py', '-r', 'force', '-v']):
-            opts = yield_arguments()
+            opts = yield_rules(yield_arguments())
             self.assertEqual(opts.reboot, 1)
             self.assertEqual(opts.debug_vars, {'debug': 1, 'debug_limit': 0})
 
         with patch('sys.argv', ['freshenmac.py', '-r', 'skip']):
-            opts = yield_arguments()
+            opts = yield_rules(yield_arguments())
             self.assertEqual(opts.reboot, -1)
 
         with patch('sys.argv', ['freshenmac.py', '-r', 'default']):
-            opts = yield_arguments()
+            opts = yield_rules(yield_arguments())
             self.assertEqual(opts.reboot, 0)
 
         with patch('sys.argv', ['freshenmac.py', '-r']):
@@ -358,9 +333,8 @@ class TestTopLevelFunctions(unittest.TestCase):
                 yield_arguments()
 
         with patch('sys.argv', ['freshenmac.py', '-z']):
-            opts = yield_arguments()
+            opts = yield_rules(yield_arguments())
             self.assertTrue(opts.standalone)
-            self.assertFalse(opts.update)
 
     def test_yield_arguments_ignore_mas(self):
         """Verifies yield_arguments parses --ignore-mas, --skip-mas, and -i aliases."""
@@ -380,15 +354,23 @@ class TestTopLevelFunctions(unittest.TestCase):
             opts = yield_arguments()
             self.assertEqual(opts.ignore_mas, ['Telegram'])
 
-    def test_yield_arguments_save_prefs(self):
-        """Verifies yield_arguments parses -s and --save-prefs options."""
+        with patch('sys.argv', ['freshenmac.py', '--ignore-mas', 'Xcode', '497799835', 'Xcode']):
+            opts = yield_rules(yield_arguments())
+            self.assertEqual(opts.ignore_mas, {'Xcode', '497799835'})
+
+    def test_yield_arguments_save_pref(self):
+        """Verifies yield_arguments parses -s, --save-pref, and --save-prefs options."""
         with patch('sys.argv', ['freshenmac.py', '-s']):
             opts = yield_arguments()
-            self.assertEqual(opts.save_prefs, 'help')
+            self.assertEqual(opts.save_pref, 'help')
+
+        with patch('sys.argv', ['freshenmac.py', '--save-pref', 'download-speed=10']):
+            opts = yield_arguments()
+            self.assertEqual(opts.save_pref, 'download-speed=10')
 
         with patch('sys.argv', ['freshenmac.py', '--save-prefs', 'Schedule=0 6 * * 1']):
             opts = yield_arguments()
-            self.assertEqual(opts.save_prefs, 'Schedule=0 6 * * 1')
+            self.assertEqual(opts.save_pref, 'Schedule=0 6 * * 1')
 
     def test_yield_arguments_schedule(self):
         """Verifies yield_arguments parses --schedule and --cron aliases."""
@@ -411,9 +393,9 @@ class TestTopLevelFunctions(unittest.TestCase):
             self.assertTrue(opts.spinner)
 
     def test_yield_arguments_trace(self):
-        """Verifies yield_arguments parses --trace setting debug=9 and debug_limit=-1."""
+        """Verifies yield_arguments and yield_rules parse --trace setting debug=9 and debug_limit=-1."""
         with patch('sys.argv', ['freshenmac.py', '--trace']):
-            opts = yield_arguments()
+            opts = yield_rules(yield_arguments())
             self.assertTrue(opts.trace)
             self.assertEqual(opts.debug_vars, {'debug': 9, 'debug_limit': -1})
 

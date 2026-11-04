@@ -1,5 +1,4 @@
 import plistlib
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -8,11 +7,8 @@ from freshenmac.config import DEFAULTS, PATHS
 from freshenmac.plist import (
     CronSchedule,
     LaunchAgent,
-    PackageSync,
     SavePreferences,
     StartupRun,
-    file_needs_update,
-    get_file_build,
     load_preferences,
 )
 from freshenmac.util import Logger, RunCMD
@@ -62,6 +58,11 @@ class TestCronSchedule(unittest.TestCase):
             CronSchedule.from_cron("0 6 abc * 1")
         self.assertIn("Invalid integer 'abc' for field 'Day'", str(ctx3.exception))
 
+    def test_from_cron_sunday_normalization(self):
+        """Verifies from_cron normalizes Sunday value 7 to 0 for launchd."""
+        sched = CronSchedule.from_cron("0 6 * * 7")
+        self.assertEqual(sched.to_launchd(), {'Minute': 0, 'Hour': 6, 'Weekday': 0})
+
     def test_from_cron_valid_commas(self):
         """Verifies from_cron parses comma-separated field values into Cartesian intervals."""
         sched = CronSchedule.from_cron("0 6 1,15 * *")
@@ -103,80 +104,23 @@ class TestCronSchedule(unittest.TestCase):
             CronSchedule.parse(123)  # type: ignore[arg-type]
 
     def test_resolve_precedence(self):
-        """Verifies resolve respects explicit arguments, saved preferences, and defaults."""
-        # 1. Explicit argument
-        s1 = CronSchedule.resolve("0 12 * * *")
-        self.assertEqual(s1.to_launchd(), {'Minute': 0, 'Hour': 12})
-        with self.assertRaises(ValueError):
-            CronSchedule.resolve(123)
-
-        # 2. Saved preferences
+        """Verifies resolve respects saved preferences and falls back to defaults."""
+        # 1. Saved preferences
         with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
-            s2 = CronSchedule.resolve()
-            self.assertEqual(s2.to_launchd(), {'Minute': 30, 'Hour': 7, 'Weekday': 2})
+            s1 = CronSchedule.resolve()
+            self.assertEqual(s1.to_launchd(), {'Minute': 30, 'Hour': 7, 'Weekday': 2})
 
-        # 3. Invalid saved preference logs warning and falls back to DEFAULTS
+        # 2. Invalid saved preference logs warning and falls back to DEFAULTS
         mock_log = MagicMock()
         with patch('freshenmac.plist.load_preferences', return_value={'schedule': 'invalid cron'}):
-            s3 = CronSchedule.resolve(logger=mock_log)
-            self.assertEqual(s3.to_launchd(), DEFAULTS['schedule'])
+            s2 = CronSchedule.resolve(logger=mock_log)
+            self.assertEqual(s2.to_launchd(), DEFAULTS['schedule'])
             self.assertTrue(mock_log.print_store.called)
 
-
-class TestFileUpdateHelpers(unittest.TestCase):
-    """
-    Unit tests for file build extraction and version comparison helpers.
-
-    Tests file_needs_update logic (missing targets, build version comparison, fallback)
-    and get_file_build regex parsing from script headers.
-    """
-
-    def test_file_needs_update(self):
-        """Verifies file_needs_update compares FILE_BUILD numbers between source and destination."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            src = Path(tmp_dir) / 'source.py'
-            dst = Path(tmp_dir) / 'target.py'
-
-            # Case 1: Missing destination file requires copy/update
-            src.write_text("FILE_BUILD = 2\n")
-            self.assertTrue(file_needs_update(src, dst))
-
-            # Case 2: Destination with lower build requires update
-            dst.write_text("FILE_BUILD = 1\n")
-            self.assertTrue(file_needs_update(src, dst))
-
-            # Case 3: Destination with equal build is already up to date
-            dst.write_text("FILE_BUILD = 2\n")
-            self.assertFalse(file_needs_update(src, dst))
-
-            # Case 4: Destination with higher build (e.g. local dev) does not overwrite
-            dst.write_text("FILE_BUILD = 3\n")
-            self.assertFalse(file_needs_update(src, dst))
-
-            # Case 5: Neither file defines FILE_BUILD -> dst_build is 0.0, so update is triggered
-            src.write_text("print('hello')\n")
-            dst.write_text("print('hello')\n")
-            self.assertTrue(file_needs_update(src, dst))
-
-    def test_get_file_build(self):
-        """Verifies get_file_build parses numeric FILE_BUILD definitions from file headers."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            f = Path(tmp_dir) / 'test_build.py'
-
-            # Case 1: Non-existent file defaults to 0.0
-            self.assertEqual(get_file_build(Path(tmp_dir) / 'nonexistent.py'), 0.0)
-
-            # Case 2: Standard assignment matches
-            f.write_text("FILE_BUILD = 42\n")
-            self.assertEqual(get_file_build(f), 42)
-
-            # Case 3: Typed variable annotations (e.g. FILE_BUILD: int = 42) do not match
-            f.write_text("FILE_BUILD: int = 42\n")
-            self.assertEqual(get_file_build(f), 0.0)
-
-            # Case 4: Missing declaration defaults to 0.0
-            f.write_text("x = 1\n")
-            self.assertEqual(get_file_build(f), 0.0)
+        # 3. Empty preferences falls back to DEFAULTS
+        with patch('freshenmac.plist.load_preferences', return_value={}):
+            s3 = CronSchedule.resolve()
+            self.assertEqual(s3.to_launchd(), DEFAULTS['schedule'])
 
 
 class TestLaunchAgent(unittest.TestCase):
@@ -196,7 +140,7 @@ class TestLaunchAgent(unittest.TestCase):
         agent = LaunchAgent(dry_run=True)
         self.assertTrue(agent.activate())
 
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_activate_failure(self, mock_cmd):
         """Verifies activate returns False when launchctl bootstrap and fallback load fail."""
         agent = LaunchAgent(dry_run=False)
@@ -209,7 +153,7 @@ class TestLaunchAgent(unittest.TestCase):
             self.assertFalse(agent.activate())
             mock_bootout.assert_called_once()
 
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_activate_success(self, mock_cmd):
         """Verifies activate boots out old agent and bootstraps new agent successfully."""
         agent = LaunchAgent(dry_run=False)
@@ -219,7 +163,7 @@ class TestLaunchAgent(unittest.TestCase):
             mock_bootout.assert_called_once()
 
     @patch('freshenmac.plist.getuid', return_value=501)
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_bootout(self, mock_cmd, mock_uid):
         """Verifies bootout executes launchctl bootout across user and GUI domains."""
         agent = LaunchAgent(dry_run=False)
@@ -233,22 +177,20 @@ class TestLaunchAgent(unittest.TestCase):
         self.assertTrue(agent.bootout())
 
     def test_build_plist_data(self):
-        """Verifies build_plist_data generates valid XML plist bytes matching schedule parameters."""
-        agent = LaunchAgent(schedule={'Hour': 8, 'Minute': 30, 'Weekday': 1})
+        """Verifies build_plist_data generates valid XML plist bytes matching default schedule parameters."""
         with patch('freshenmac.plist.load_preferences', return_value={}):
+            agent = LaunchAgent(dry_run=True)
             data = agent.build_plist_data()
             self.assertIsInstance(data, bytes)
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['Label'], DEFAULTS['plist'])
-            self.assertEqual(parsed['StartCalendarInterval']['Hour'], 8)
-            self.assertEqual(parsed['StartCalendarInterval']['Minute'], 30)
-            self.assertEqual(parsed['StartCalendarInterval']['Weekday'], 1)
-            self.assertEqual(parsed['ProgramArguments'][1], str(PATHS['Script']['Target']))
+            self.assertEqual(parsed['StartCalendarInterval'], DEFAULTS['schedule'])
+            self.assertEqual(parsed['ProgramArguments'][1], str(agent.target_script))
 
     def test_build_plist_data_with_preferences(self):
         """Verifies build_plist_data incorporates cron schedule from stored preferences."""
         with patch('freshenmac.plist.load_preferences', return_value={'schedule': '30 7 * * 2'}):
-            agent = LaunchAgent()
+            agent = LaunchAgent(dry_run=True)
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 30, 'Hour': 7, 'Weekday': 2})
@@ -259,18 +201,16 @@ class TestLaunchAgent(unittest.TestCase):
             'freshenmac.plist.load_preferences',
             return_value={'schedule': {'Minute': 0, 'Hour': 6, 'Weekday': 1}},
         ):
-            agent = LaunchAgent()
+            agent = LaunchAgent(dry_run=True)
             data = agent.build_plist_data()
             parsed = plistlib.loads(data)
             self.assertEqual(parsed['StartCalendarInterval'], {'Minute': 0, 'Hour': 6, 'Weekday': 1})
 
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_check_and_install_already_active(self, mock_cmd):
-        """Verifies check_and_install skips installation if files, plist, and launchd are current."""
+        """Verifies check_and_install skips installation if plist and launchd are current."""
         agent = LaunchAgent(dry_run=False)
         with patch.object(
-            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
-        ), patch.object(
             LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False,
         ), patch.object(
             LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
@@ -283,13 +223,11 @@ class TestLaunchAgent(unittest.TestCase):
             mock_install.assert_not_called()
             mock_activate.assert_not_called()
 
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_check_and_install_needs_install(self, mock_cmd):
         """Verifies check_and_install triggers install and activate when plist requires update."""
         agent = LaunchAgent(dry_run=False)
         with patch.object(
-            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
-        ), patch.object(
             LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
         ), patch.object(
             LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=False,
@@ -302,33 +240,38 @@ class TestLaunchAgent(unittest.TestCase):
             mock_install.assert_called_once()
             mock_activate.assert_called_once()
 
+    @patch('freshenmac.plist.pwd.getpwnam')
+    @patch('freshenmac.plist.util.TortimerCreds.get_console_user', return_value='matt')
+    @patch('freshenmac.plist.getuid', return_value=0)
+    def test_console_uid_as_root(self, mock_uid, mock_console_user, mock_getpwnam):
+        """Verifies console_uid resolves to the console user's UID when running as root."""
+        mock_pw = MagicMock()
+        mock_pw.pw_uid = 501
+        mock_getpwnam.return_value = mock_pw
+        agent = LaunchAgent(dry_run=True)
+        self.assertEqual(agent.console_uid, 501)
+        mock_getpwnam.assert_called_once_with('matt')
+
     def test_default_logger(self):
         """Verifies default logger initialization on LaunchAgent."""
         agent = LaunchAgent(dry_run=True)
         self.assertIsInstance(agent.log, Logger)
-        self.assertIs(agent.logger, agent.log)
 
     @patch('freshenmac.plist.getuid', return_value=501)
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_domain_gui(self, mock_cmd, mock_uid):
         """Verifies domain resolves to gui/UID when GUI domain is available."""
-        agent = LaunchAgent()
+        agent = LaunchAgent(dry_run=True)
         mock_cmd.return_value = make_cmd(errno=0)
         self.assertEqual(agent.domain, 'gui/501')
 
     @patch('freshenmac.plist.getuid', return_value=501)
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_domain_user(self, mock_cmd, mock_uid):
         """Verifies domain falls back to user/UID when GUI domain is unavailable."""
-        agent = LaunchAgent()
+        agent = LaunchAgent(dry_run=True)
         mock_cmd.return_value = make_cmd(errno=1)
         self.assertEqual(agent.domain, 'user/501')
-
-    def test_files_to_update_same_dir(self):
-        """Verifies files_to_update returns empty list when target directory is source package."""
-        agent = LaunchAgent()
-        agent.package_sync.target_dir = PATHS['Dir']['Package']
-        self.assertEqual(agent.package_sync.files_to_update, [])
 
     def test_init_defaults(self):
         """Verifies LaunchAgent default property values and directory destinations."""
@@ -340,69 +283,80 @@ class TestLaunchAgent(unittest.TestCase):
         self.assertEqual(agent.debug_vars, {'debug': 0, 'debug_limit': 0})
         self.assertFalse(agent.dry_run)
         self.assertEqual(agent.launch_agents_dir, Path('/Library/LaunchAgents'))
-        self.assertEqual(agent.package_sync.target_dir, PATHS['Dir']['Target'])
-        self.assertEqual(agent.package_sync.target_script, PATHS['Script']['Target'])
+        self.assertIsInstance(agent.target_script, Path)
+
+    @patch('freshenmac.plist.getuid', return_value=0)
+    def test_install_as_root_calls_install_privileged(self, mock_uid):
+        """Verifies install delegates to _install_privileged when running as root with privileged=True."""
+        agent = LaunchAgent(dry_run=False)
+        with patch.object(
+            agent, '_install_privileged', return_value=True,
+        ) as mock_priv:
+            self.assertTrue(agent.install(privileged=True))
+            mock_priv.assert_called_once()
 
     def test_install_dry_run(self):
         """Verifies install returns True without writing files in dry-run mode."""
         agent = LaunchAgent(dry_run=True)
         with patch.object(
-            PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[Path('foo.py')],
-        ), patch.object(
             LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
         ):
             self.assertTrue(agent.install())
 
     def test_install_normal(self):
-        """Verifies install writes package files and target plist in normal mode."""
+        """Verifies install writes target plist in normal mode."""
         agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
-            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.package_sync.target_script = agent.package_sync.target_dir / 'main.py'
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
+        agent.log_dir = Path('/fake/Logs')
+        agent.target_script = Path('/fake/freshenmac')
 
-            dummy_src = Path(tmp_dir) / 'source_freshenmac.py'
-            dummy_src.write_text("FILE_BUILD = 1\n")
-
-            with patch.object(
-                PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[dummy_src],
-            ), patch.object(
-                LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
-            ):
-                self.assertTrue(agent.install())
-                self.assertTrue((agent.package_sync.target_dir / dummy_src.name).is_file())
-                self.assertTrue(agent.target_plist.is_file())
+        with patch(
+            'freshenmac.plist.write_file',
+        ) as mock_write, patch.object(
+            agent, '_init_log_files',
+        ) as mock_init_logs:
+            self.assertTrue(agent.install())
+            mock_write.assert_called_once_with(agent.target_plist, agent.build_plist_data())
+            mock_init_logs.assert_called_once()
 
     @patch('sys.stdin.isatty', return_value=True)
     @patch('freshenmac.util.RunCMD')
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_install_permission_error_interactive(self, mock_cmd, mock_util_cmd, mock_isatty):
         """Verifies install falls back to privileged RunCMD when standard file write gets PermissionError."""
         agent = LaunchAgent(dry_run=False)
         mock_cmd.return_value = make_cmd(errno=0)
         mock_util_cmd.return_value = make_cmd(errno=0)
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
+        agent.log_dir = Path('/fake/Logs')
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.target_dir = Path(tmp_dir) / 'pkg'
-            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.log_dir = Path(tmp_dir) / 'Logs'
+        with patch(
+            'freshenmac.plist.write_file', side_effect=PermissionError("read-only"),
+        ), patch.object(
+            agent, '_prepare_sudoers_commands', return_value=([], Path('')),
+        ), patch.object(
+            Path, 'write_bytes',
+        ), patch.object(
+            Path, 'unlink',
+        ):
+            self.assertTrue(agent.install())
+            self.assertTrue(mock_util_cmd.called)
+            self.assertTrue(mock_util_cmd.call_args[1].get('need_root'))
 
-            with patch.object(
-                Path, 'mkdir', side_effect=PermissionError("read-only"),
-            ), patch.object(
-                PackageSync, 'files_to_update', new_callable=PropertyMock, return_value=[],
-            ), patch.object(
-                LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=True,
-            ):
-                self.assertTrue(agent.install())
-                self.assertTrue(mock_util_cmd.called)
-                self.assertTrue(mock_util_cmd.call_args[1].get('need_root'))
+    def test_install_privileged_log_permissions(self):
+        """Verifies _install_privileged configures system log file with root:admin and 0664 permissions."""
+        agent = LaunchAgent(dry_run=False)
+        with patch.object(agent, 'run_privileged', return_value=True) as mock_run:
+            agent._install_privileged(b'<plist/>')
+            called_cmd = mock_run.call_args[0][0]
+            joined_cmd = ' '.join(called_cmd)
+            self.assertIn("chown root:admin '/Library/Logs/FreshenMac.log'", joined_cmd)
+            self.assertIn("chmod 664 '/Library/Logs/FreshenMac.log'", joined_cmd)
 
-    @patch('freshenmac.plist.RunCMD')
+    @patch('freshenmac.plist.util.RunCMD')
     def test_is_active(self, mock_cmd):
         """Verifies is_active inspects launchctl print status for current agent label."""
-        agent = LaunchAgent()
+        agent = LaunchAgent(dry_run=True)
         with patch.object(agent, 'domain', 'gui/501'):
             mock_cmd.return_value = make_cmd(errno=0)
             self.assertTrue(agent.is_active)
@@ -412,48 +366,61 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_load_and_save_preferences(self):
         """Verifies saving preferences to plist and reading them back via load_preferences."""
-        agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            pref_path = Path(tmp_dir) / 'com.panther37.FreshenMac.plist'
-            with patch.dict(
-                'freshenmac.config.PATHS', {
-                    'Prefs': {
-                        'Default': pref_path,
-                        'User':    Path(tmp_dir) / 'nonexistent.plist',
-                    },
+        pref_path = Path('/fake/com.panther37.FreshenMac.plist')
+        user_path = Path('/fake/nonexistent.plist')
+        stored: dict[Path, bytes] = {}
+
+        def fake_write(a_path: Path, data: bytes, mode: int = 0o644) -> None:
+            stored[a_path] = data
+
+        with patch.dict(
+            'freshenmac.config.PATHS', {
+                'Prefs': {
+                    'Default': pref_path,
+                    'User':    user_path,
                 },
-            ):
-                self.assertEqual(load_preferences(), {})
-                self.assertTrue(SavePreferences({'no-mas': ['Xcode']}).save())
-                self.assertEqual(load_preferences(), {'no-mas': ['xcode']})
+            },
+        ), patch(
+            'freshenmac.plist.write_file', side_effect=fake_write,
+        ), patch.object(
+            Path, 'is_file', autospec=True, side_effect=lambda p: p in stored,
+        ), patch.object(
+            Path, 'read_bytes', autospec=True, side_effect=lambda p: stored[p],
+        ):
+            self.assertEqual(load_preferences(), {})
+            self.assertTrue(SavePreferences({'no-mas': ['Xcode']}).save())
+            self.assertEqual(load_preferences(), {'no-mas': ['xcode']})
 
     def test_load_preferences_merging(self):
         """Verifies load_preferences merges system and user preference plists with user precedence."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sys_pref = Path(tmp_dir) / 'system.plist'
-            user_pref = Path(tmp_dir) / 'user.plist'
-            sys_pref.write_bytes(plistlib.dumps({'schedule': '0 6 * * 1', 'no-mas': ['Xcode']}))
-            user_pref.write_bytes(plistlib.dumps({'no-mas': ['Xcode', 'Logic Pro'], 'Debug': True}))
-            with patch.dict(
-                'freshenmac.config.PATHS', {
-                    'Prefs': {
-                        'Default': sys_pref,
-                        'User':    user_pref,
-                    },
+        sys_pref = Path('/fake/system.plist')
+        user_pref = Path('/fake/user.plist')
+        stored = {
+            sys_pref:  plistlib.dumps({'schedule': '0 6 * * 1', 'no-mas': ['Xcode']}),
+            user_pref: plistlib.dumps({'no-mas': ['Xcode', 'Logic Pro'], 'Debug': True}),
+        }
+        with patch.dict(
+            'freshenmac.config.PATHS', {
+                'Prefs': {
+                    'Default': sys_pref,
+                    'User':    user_pref,
                 },
-            ):
-                prefs = load_preferences()
-                self.assertEqual(prefs['schedule'], '0 6 * * 1')
-                self.assertEqual(prefs['no-mas'], ['Xcode', 'Logic Pro'])
-                self.assertEqual(prefs['Debug'], True)
+            },
+        ), patch.object(
+            Path, 'is_file', autospec=True, side_effect=lambda p: p in stored,
+        ), patch.object(
+            Path, 'read_bytes', autospec=True, side_effect=lambda p: stored[p],
+        ):
+            prefs = load_preferences()
+            self.assertEqual(prefs['schedule'], '0 6 * * 1')
+            self.assertEqual(prefs['no-mas'], ['Xcode', 'Logic Pro'])
+            self.assertEqual(prefs['Debug'], True)
 
     def test_logger_integration(self):
         """Verifies custom logger integration logs component messages on activation."""
         mock_logger = MagicMock()
         agent = LaunchAgent(dry_run=True, logger=mock_logger)
         self.assertIs(agent.log, mock_logger)
-        self.assertIs(agent.logger, mock_logger)
-        self.assertIs(agent.package_sync.log, mock_logger)
 
         self.assertTrue(agent.activate())
         mock_logger.print_store.assert_called_with(
@@ -463,34 +430,41 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_plist_needs_install(self):
         """Verifies plist_needs_install checks file existence, content matching, ownership, and mode."""
-        agent = LaunchAgent()
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.launch_agents_dir = Path(tmp_dir)
+        agent = LaunchAgent(dry_run=True)
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
+        agent.target_script = Path('/fake/freshenmac')
 
-            # Missing plist requires install
+        # Missing plist requires install
+        with patch.object(Path, 'is_file', return_value=False):
             self.assertTrue(agent.plist_needs_install)
 
-            # Plist exists with matching content and correct uid/mode -> does not need install
-            agent.target_plist.write_bytes(agent.build_plist_data())
-            with patch.object(Path, 'stat') as mock_stat:
-                mock_stat_res = MagicMock()
-                mock_stat_res.st_uid = 0
-                mock_stat_res.st_mode = 0o100644
-                mock_stat.return_value = mock_stat_res
-                self.assertFalse(agent.plist_needs_install)
+        # Plist exists with matching content and correct uid/mode -> does not need install
+        plist_bytes = agent.build_plist_data()
+        with patch.object(
+            Path, 'is_file', return_value=True,
+        ), patch.object(
+            Path, 'read_bytes', return_value=plist_bytes,
+        ), patch.object(
+            Path, 'stat',
+        ) as mock_stat:
+            mock_stat_res = MagicMock()
+            mock_stat_res.st_uid = 0
+            mock_stat_res.st_mode = 0o100644
+            mock_stat.return_value = mock_stat_res
+            self.assertFalse(agent.plist_needs_install)
 
-                # Wrong uid requires re-install/fix
-                mock_stat_res.st_uid = 501
-                self.assertTrue(agent.plist_needs_install)
+            # Wrong uid requires re-install/fix
+            mock_stat_res.st_uid = 501
+            self.assertTrue(agent.plist_needs_install)
 
-                # Wrong mode requires re-install/fix
-                mock_stat_res.st_uid = 0
-                mock_stat_res.st_mode = 0o100777
-                self.assertTrue(agent.plist_needs_install)
+            # Wrong mode requires re-install/fix
+            mock_stat_res.st_uid = 0
+            mock_stat_res.st_mode = 0o100777
+            self.assertTrue(agent.plist_needs_install)
 
     def test_python_bin(self):
         """Verifies python_bin returns executable python path string."""
-        agent = LaunchAgent()
+        agent = LaunchAgent(dry_run=True)
         py_bin = agent.python_bin
         self.assertIsInstance(py_bin, str)
         self.assertTrue('python' in py_bin)
@@ -498,19 +472,19 @@ class TestLaunchAgent(unittest.TestCase):
     def test_remove_script(self):
         """Verifies remove_script unloads active service and deletes target plist."""
         agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.launch_agents_dir.mkdir(parents=True)
-            plist_path = agent.target_plist
-            plist_path.write_text("<plist></plist>")
-            with patch.object(
-                LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
-            ), patch.object(
-                agent, 'bootout',
-            ) as mock_bootout:
-                self.assertTrue(agent.remove_script())
-                mock_bootout.assert_called_once()
-                self.assertFalse(plist_path.exists())
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
+        with patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            agent, 'bootout',
+        ) as mock_bootout, patch.object(
+            Path, 'is_file', return_value=True,
+        ), patch.object(
+            Path, 'unlink',
+        ) as mock_unlink:
+            self.assertTrue(agent.remove_script())
+            mock_bootout.assert_called_once()
+            mock_unlink.assert_called_once()
 
     def test_sudoers_lifecycle(self):
         """Verifies _remove_sudoers cleans up /etc/sudoers.d configuration."""
@@ -522,7 +496,7 @@ class TestLaunchAgent(unittest.TestCase):
             return make_cmd(errno=0)
 
         with patch(
-            'freshenmac.plist.RunCMD', side_effect=fake_runcmd,
+            'freshenmac.plist.util.RunCMD', side_effect=fake_runcmd,
         ), patch(
             'freshenmac.util.RunCMD', side_effect=fake_runcmd,
         ):
@@ -533,113 +507,71 @@ class TestLaunchAgent(unittest.TestCase):
 
     def test_target_plist(self):
         """Verifies target_plist resolves to system LaunchAgents destination path."""
-        agent = LaunchAgent()
+        agent = LaunchAgent(dry_run=True)
         expected = Path('/Library/LaunchAgents') / f"{DEFAULTS['plist']}.plist"
         self.assertEqual(agent.target_plist, expected)
 
+    def test_target_script_resolution(self):
+        """Verifies target_script resolves from PATHS['Script']['Target'] list and fallbacks."""
+        cand1 = Path('/fake/missing_dir/freshenmac')
+        cand2 = Path('/fake/existing_dir/freshenmac')
+        src = Path('/fake/FreshenMac.py')
+
+        # 1. Resolves to candidate whose parent directory exists
+        with patch.dict(
+            'freshenmac.config.PATHS', {'Script': {'Source': src, 'Target': [cand1, cand2]}},
+        ), patch.object(
+            Path, 'is_file', autospec=True, return_value=False,
+        ), patch.object(
+            Path, 'is_dir', autospec=True, side_effect=lambda p: p == cand2.parent,
+        ):
+            self.assertEqual(LaunchAgent(dry_run=True).target_script, cand2)
+
+        # 2. Resolves to candidate file that exists
+        with patch.dict(
+            'freshenmac.config.PATHS', {'Script': {'Source': src, 'Target': [cand1, cand2]}},
+        ), patch.object(
+            Path, 'is_file', autospec=True, side_effect=lambda p: p == cand1,
+        ):
+            self.assertEqual(LaunchAgent(dry_run=True).target_script, cand1)
+
+        # 3. Falls back to brew --prefix or Source when no target dir exists
+        missing = Path('/fake/none/freshenmac')
+        with patch.dict(
+            'freshenmac.config.PATHS', {'Script': {'Source': src, 'Target': [missing]}},
+        ), patch.object(
+            Path, 'is_file', autospec=True, return_value=False,
+        ), patch.object(
+            Path, 'is_dir', autospec=True, return_value=False,
+        ), patch(
+            'freshenmac.plist.shutil.which', return_value=None,
+        ), patch(
+            'freshenmac.plist.util.RunCMD', return_value=make_cmd(stdout=''),
+        ):
+            self.assertEqual(LaunchAgent(dry_run=True).target_script, src)
+
     def test_uninstall(self):
-        """Verifies uninstall unloads LaunchAgent, removes sudoers, and cleans up files."""
+        """Verifies uninstall unloads LaunchAgent, removes sudoers, and cleans up plist."""
         agent = LaunchAgent(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.package_sync.target_dir = Path(tmp_dir) / 'pkg'
-            agent.launch_agents_dir.mkdir(parents=True)
-            agent.package_sync.target_dir.mkdir(parents=True)
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
 
-            plist_path = agent.target_plist
-            plist_path.write_text("<plist></plist>")
-
-            script_path = agent.package_sync.target_dir / 'main.py'
-            script_path.write_text("FILE_BUILD = 1\n")
-
-            with patch.object(
-                LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
-            ), patch.object(
-                agent, 'bootout',
-            ) as mock_bootout, patch.object(
-                agent, '_remove_sudoers',
-            ) as mock_remove_sudoers, patch(
-                'freshenmac.plist.StartupRun',
-            ):
-                self.assertTrue(agent.uninstall())
-                mock_bootout.assert_called_once()
-                mock_remove_sudoers.assert_called_once()
-                self.assertFalse(plist_path.exists())
-                self.assertFalse(agent.package_sync.target_dir.exists())
-
-
-class TestPackageSync(unittest.TestCase):
-    """
-    Unit tests for PackageSync file deployment and directory management.
-
-    Tests copying package sources to /Library/Application Support, comparing builds,
-    and removing installed files on uninstall.
-    """
-
-    def test_default_logger(self):
-        """Verifies default logger initialization on PackageSync."""
-        sync = PackageSync(dry_run=True)
-        self.assertIsInstance(sync.log, Logger)
-        self.assertIs(sync.logger, sync.log)
-
-    def test_init_defaults(self):
-        """Verifies PackageSync default destination paths and dry-run flag."""
-        sync = PackageSync(dry_run=True)
-        self.assertTrue(sync.dry_run)
-        self.assertEqual(sync.target_dir, PATHS['Dir']['Target'])
-        self.assertEqual(sync.target_script, PATHS['Script']['Target'])
-
-    def test_logger_integration(self):
-        """Verifies PackageSync delegates status messages to provided logger instance."""
-        mock_logger = MagicMock()
-        sync = PackageSync(dry_run=True, logger=mock_logger)
-        self.assertIs(sync.log, mock_logger)
-        self.assertIs(sync.logger, mock_logger)
-
-        self.assertTrue(sync.sync(files=[Path('dummy.py')]))
-        mock_logger.print_store.assert_called_with(
-            f"[Dry-run] Would update 1 file(s) in {sync.target_dir}",
-            component='PackageSync',
-        )
-
-    def test_sync_dry_run(self):
-        """Verifies sync returns True without copying files in dry-run mode."""
-        sync = PackageSync(dry_run=True)
-        self.assertTrue(sync.sync(files=[Path('dummy.py')]))
-
-    def test_sync_success(self):
-        """Verifies sync copies specified files to target package directory."""
-        sync = PackageSync(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sync.target_dir = Path(tmp_dir) / 'pkg'
-            sync.target_script = sync.target_dir / 'main.py'
-            src = Path(tmp_dir) / 'dummy.py'
-            src.write_text("FILE_BUILD = 1\n")
-            self.assertTrue(sync.sync(files=[]))
-            self.assertTrue(sync.sync(files=[src]))
-            dest = sync.target_dir / 'dummy.py'
-            self.assertTrue(dest.is_file())
-            self.assertEqual(dest.read_text(), "FILE_BUILD = 1\n")
-
-    def test_uninstall(self):
-        """Verifies uninstall removes target package directory and its contents."""
-        sync = PackageSync(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sync.target_dir = Path(tmp_dir) / 'pkg'
-            sync.target_dir.mkdir(parents=True)
-            f = sync.target_dir / 'main.py'
-            f.write_text("FILE_BUILD = 1\n")
-            self.assertTrue(sync.uninstall())
-            self.assertFalse(sync.target_dir.exists())
-
-    def test_update_files_same_file(self):
-        """Verifies update_files does not copy when target is the source script."""
-        sync = PackageSync(dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            same = Path(tmp_dir) / 'same.py'
-            same.write_text("FILE_BUILD = 1\n")
-            with patch.dict('freshenmac.config.PATHS', {'Script': {'Source': same, 'Target': sync.target_script}}):
-                self.assertTrue(sync.update_files(target=same))
+        with patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            agent, 'bootout',
+        ) as mock_bootout, patch.object(
+            agent, '_remove_sudoers',
+        ) as mock_remove_sudoers, patch(
+            'freshenmac.plist.StartupRun',
+        ), patch.object(
+            Path, 'is_file', return_value=True,
+        ), patch.object(
+            Path, 'unlink',
+        ) as mock_unlink:
+            self.assertTrue(agent.uninstall())
+            mock_bootout.assert_called_once()
+            mock_remove_sudoers.assert_called_once()
+            mock_unlink.assert_called_once()
 
 
 class TestSavePreferences(unittest.TestCase):
@@ -655,13 +587,11 @@ class TestSavePreferences(unittest.TestCase):
         mock_logger = MagicMock()
         pref = SavePreferences(dry_run=True, logger=mock_logger)
         self.assertIs(pref.log, mock_logger)
-        self.assertIs(pref.logger, mock_logger)
 
     def test_default_logger(self):
         """Verifies default logger initialization on SavePreferences."""
         pref = SavePreferences(dry_run=True)
         self.assertIsInstance(pref.log, Logger)
-        self.assertIs(pref.logger, pref.log)
 
     def test_invalid_preference_logs_error(self):
         """Verifies parse error logged when input string lacks key-value delimiter."""
@@ -687,6 +617,11 @@ class TestSavePreferences(unittest.TestCase):
         pref = SavePreferences(dry_run=True, logger=mock_logger)
         pref.print_help()
         self.assertTrue(mock_logger.printf.called)
+
+    def test_save_download_speed(self):
+        """Verifies download-speed preference parses and normalizes correctly."""
+        pref_speed = SavePreferences('download-speed=15.5', dry_run=True)
+        self.assertEqual(pref_speed.updates, {'download-speed': 15.5})
 
     def test_save_dry_run_logs(self):
         """Verifies dry-run save logs intentions without modifying preferences."""
@@ -729,7 +664,6 @@ class TestStartupRun(unittest.TestCase):
         """Verifies default logger initialization on StartupRun."""
         startup = StartupRun(dry_run=True)
         self.assertIsInstance(startup.log, Logger)
-        self.assertIs(startup.logger, startup.log)
 
     def test_init_with_custom_paths(self):
         """Verifies StartupRun accepts custom directories and plist paths."""
@@ -737,6 +671,7 @@ class TestStartupRun(unittest.TestCase):
         custom_logs = Path('/tmp/custom_logs')
         custom_plist = Path('/tmp/custom.plist')
         agent = StartupRun(
+            dry_run=True,
             launch_agents_dir=custom_agents,
             log_dir=custom_logs,
             target_plist=custom_plist,
@@ -750,12 +685,11 @@ class TestStartupRun(unittest.TestCase):
         mock_logger = MagicMock()
         startup = StartupRun(dry_run=True, logger=mock_logger)
         self.assertIs(startup.log, mock_logger)
-        self.assertIs(startup.logger, mock_logger)
         self.assertIs(startup.agent.log, mock_logger)
 
     def test_properties_delegation(self):
         """Verifies setting property wrappers updates underlying LaunchAgent instance."""
-        agent = StartupRun()
+        agent = StartupRun(dry_run=True)
         new_agents = Path('/tmp/agents')
         new_logs = Path('/tmp/logs')
         new_plist = Path('/tmp/agent.plist')
@@ -773,31 +707,43 @@ class TestStartupRun(unittest.TestCase):
 
     def test_remove_missing_file_returns_true(self):
         """Verifies remove_script returns True when target plist does not exist."""
-        agent = StartupRun()
+        agent = StartupRun(dry_run=True)
         agent.target_plist = Path('/nonexistent/path/runonce.plist')
         self.assertTrue(agent.agent.remove_script())
 
     def test_schedule_and_remove(self):
         """Verifies schedule creates RunAtLoad plist and remove_script deletes it."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            agent = StartupRun(dry_run=False)
-            agent.launch_agents_dir = Path(tmp_dir) / 'LaunchAgents'
-            agent.log_dir = Path(tmp_dir) / 'Logs'
-            agent.target_plist = agent.launch_agents_dir / f"{agent.label}.plist"
+        agent = StartupRun(dry_run=False)
+        agent.launch_agents_dir = Path('/fake/LaunchAgents')
+        agent.log_dir = Path('/fake/Logs')
+        agent.target_plist = agent.launch_agents_dir / f"{agent.label}.plist"
+        stored: dict[Path, bytes] = {}
 
-            with patch('freshenmac.plist.RunCMD') as mock_cmd:
-                mock_cmd.return_value.returncode = 0
-                self.assertTrue(agent.schedule())
-                self.assertTrue(agent.target_plist.is_file())
+        def fake_write(a_path: Path, data: bytes, mode: int = 0o644) -> None:
+            stored[a_path] = data
 
-                with open(agent.target_plist, 'rb') as f:
-                    plist_data = plistlib.load(f)
-                self.assertEqual(plist_data['Label'], agent.label)
-                self.assertTrue(plist_data['RunAtLoad'])
+        with patch(
+            'freshenmac.plist.util.RunCMD',
+        ) as mock_cmd, patch(
+            'freshenmac.plist.write_file', side_effect=fake_write,
+        ), patch.object(
+            agent.agent, '_init_log_files',
+        ), patch.object(
+            Path, 'is_file', autospec=True, side_effect=lambda p: p in stored,
+        ), patch.object(
+            Path, 'unlink', autospec=True, side_effect=lambda p, *args, **kwargs: stored.pop(p, None),
+        ):
+            mock_cmd.return_value.returncode = 0
+            self.assertTrue(agent.schedule())
+            self.assertIn(agent.target_plist, stored)
 
-                # Test remove
-                self.assertTrue(agent.agent.remove_script())
-                self.assertFalse(agent.target_plist.exists())
+            plist_data = plistlib.loads(stored[agent.target_plist])
+            self.assertEqual(plist_data['Label'], agent.label)
+            self.assertTrue(plist_data['RunAtLoad'])
+
+            # Test remove
+            self.assertTrue(agent.agent.remove_script())
+            self.assertNotIn(agent.target_plist, stored)
 
     def test_schedule_dry_run(self):
         """Verifies schedule returns True without creating files in dry run."""
@@ -807,7 +753,7 @@ class TestStartupRun(unittest.TestCase):
     def test_schedule_exception(self):
         """Verifies schedule handles filesystem exceptions gracefully by returning False."""
         agent = StartupRun(dry_run=False)
-        with patch.object(Path, 'mkdir', side_effect=PermissionError("denied")):
+        with patch('freshenmac.plist.write_file', side_effect=PermissionError("denied")):
             self.assertFalse(agent.schedule())
 
 

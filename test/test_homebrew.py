@@ -1,5 +1,4 @@
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,6 +32,27 @@ class TestHomeBrew(unittest.TestCase):
         brew_intel = HomeBrew(is_arm=False)
         with patch('freshenmac.homebrew.Path.exists', side_effect=lambda: True):
             self.assertEqual(brew_intel.brew_path, Path('/usr/local/bin/brew'))
+
+    def test_calculate_cask_timeout(self):
+        """Verifies calculate_cask_timeout uses dynamic size when available and falls back to default."""
+        brew = HomeBrew(is_arm=True, download_speed_mbps=10.0)
+        with patch.object(brew, 'get_cask_size_mb', return_value=100.0):
+            # 100 MB at 10 Mbps (1.25 MB/s) with 25% buffer:
+            # 100 / 1.25 * 1.25 = 100s. Base overhead = 300s -> 400s
+            timeout = brew.calculate_cask_timeout('vlc')
+            self.assertEqual(timeout, 400)
+
+        with patch.object(brew, 'get_cask_size_mb', return_value=0.0):
+            timeout = brew.calculate_cask_timeout('unknown_cask')
+            self.assertEqual(timeout, brew.cask_timeout)
+
+        # Fallback to preference / default speed when download_speed_mbps is 0.0
+        brew_default = HomeBrew(is_arm=True)
+        self.assertEqual(brew_default.download_speed_mbps, 0.0)
+        with patch.object(brew_default, 'get_cask_size_mb', return_value=100.0), patch(
+            'freshenmac.plist.load_preferences', return_value={'download-speed': 5.0},
+        ):
+            self.assertEqual(brew_default.calculate_cask_timeout('vlc'), 500)
 
     def test_cmd_options(self):
         """Verifies cmd_options compiles execution dictionary with custom timeout and debug settings."""
@@ -95,23 +115,38 @@ class TestHomeBrew(unittest.TestCase):
             self.assertTrue(brew.updates_performed)
             self.assertTrue(any(all(['upgrade' in c, '--cask' in c, 'vlc' in c]) for c in executed_cmds))
 
+    def test_get_cask_size_mb(self):
+        """Verifies get_cask_size_mb queries brew info URL and parses Content-Length."""
+        brew = HomeBrew(is_arm=True)
+        fake_info = MagicMock()
+        fake_info.__bool__.return_value = True
+        fake_info.stdout = json.dumps({'casks': [{'url': 'https://example.com/vlc.dmg'}]})
+
+        fake_head = MagicMock()
+        fake_head.__bool__.return_value = True
+        fake_head.stdout = 'HTTP/2 200\r\ncontent-length: 10485760\r\n'
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=[fake_info, fake_head]):
+            size = brew.get_cask_size_mb('vlc')
+            self.assertEqual(size, 10.0)
+
+        with patch('freshenmac.homebrew.RunCMD', return_value=None):
+            self.assertEqual(brew.get_cask_size_mb('nonexistent'), 0.0)
+
     def test_get_cmake_formulae(self):
         """Verifies _get_cmake_formulae identifies formulae having cmake in direct or build dependencies."""
         # Arrange
         brew = HomeBrew(is_arm=True, dry_run=True)
-        fake_info = json.dumps(
-            {
-                'formulae': [
-                    {'name': 'cmake_pkg', 'build_dependencies': ['cmake', 'ninja'], 'dependencies': []},
-                    {'name': 'regular_pkg', 'build_dependencies': ['go'], 'dependencies': []},
-                    {'name': 'dep_cmake', 'build_dependencies': [], 'dependencies': ['cmake']},
-                ],
-            },
-        )
+        deps_output = 'cmake_pkg: cmake ninja\nregular_pkg: go\ndep_cmake: cmake\n'
 
         with patch('freshenmac.homebrew.RunCMD') as mock_cmd:
-            mock_cmd.return_value.stdout = fake_info
+            mock_cmd.return_value.stdout = deps_output
             mock_cmd.return_value.returncode = 0
+            mock_cmd.return_value.parse_dict.return_value = {
+                'cmake_pkg': 'cmake ninja',
+                'regular_pkg': 'go',
+                'dep_cmake': 'cmake',
+            }
 
             # Act
             res = brew._get_cmake_formulae(['cmake_pkg', 'regular_pkg', 'dep_cmake'])
@@ -259,39 +294,38 @@ class TestHomeBrew(unittest.TestCase):
 
     def test_recover_rebase_aborts_locks(self):
         """Verifies _recover_rebase aborts active rebase and resets repository state."""
-        # Arrange: create temporary repo directory with stuck rebase-merge lock
+        # Arrange: mock repo directory with stuck rebase-merge lock
         brew = HomeBrew(is_arm=True, dry_run=False)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_path = Path(tmp_dir) / 'Homebrew'
-            lock_dir = repo_path / '.git' / 'rebase-merge'
-            lock_dir.mkdir(parents=True)
+        repo_path = Path('/opt/homebrew')
+        lock_dir = repo_path / '.git' / 'rebase-merge'
+        executed_git_cmds = []
 
-            executed_git_cmds = []
+        def fake_runcmd(cmd, *args, **kwargs):
+            cmd_list = list(cmd)
+            executed_git_cmds.append(cmd_list)
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = str(repo_path)
+            mock.stderr = ""
+            mock.std_all = str(repo_path)
+            mock.strip.return_value = str(repo_path)
+            mock.__bool__.return_value = True
+            return mock
 
-            def fake_runcmd(cmd, *args, **kwargs):
-                cmd_list = list(cmd)
-                executed_git_cmds.append(cmd_list)
-                mock = MagicMock()
-                mock.returncode = 0
-                mock.stdout = str(repo_path)
-                mock.stderr = ""
-                mock.std_all = str(repo_path)
-                mock.strip.return_value = str(repo_path)
-                mock.__bool__.return_value = True
-                return mock
+        with patch(
+            'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
+        ), patch.object(
+            HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
+        ), patch.object(
+            Path, 'exists', autospec=True, side_effect=lambda p: p == lock_dir,
+        ):
+            # Act
+            res = brew._recover_rebase()
 
-            with patch(
-                'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
-            ), patch.object(
-                HomeBrew, 'brew_path', Path('/opt/homebrew/bin/brew'),
-            ):
-                # Act
-                res = brew._recover_rebase()
-
-                # Assert: aborted rebase and reset repository
-                self.assertTrue(res)
-                self.assertTrue(any(all(['rebase' in c, '--abort' in c]) for c in executed_git_cmds))
-                self.assertTrue(any('update-reset' in c for c in executed_git_cmds))
+            # Assert: aborted rebase and reset repository
+            self.assertTrue(res)
+            self.assertTrue(any(all(['rebase' in c, '--abort' in c]) for c in executed_git_cmds))
+            self.assertTrue(any('update-reset' in c for c in executed_git_cmds))
 
     def test_resolve_and_update_dependencies_tri_state(self):
         """Verifies _resolve_and_update_dependencies handles installed, outdated, and missing packages."""
@@ -466,6 +500,52 @@ class TestHomeBrew(unittest.TestCase):
                 'Cask installation failed',
             )
 
+    def test_upgrade_casks_skips_freshenmac(self):
+        """Verifies _upgrade_casks skips freshenmac cask so it is not updated twice."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        with patch('freshenmac.homebrew.RunCMD') as mock_run:
+            brew._upgrade_casks({'freshenmac': '1.1.1 ═▷ 1.5.0', 'vlc': '3.0.18 ═▷ 3.0.19'})
+            cask_calls = [call[0][0][4] for call in mock_run.call_args_list]
+            self.assertNotIn('freshenmac', cask_calls)
+            self.assertIn('vlc', cask_calls)
+
+    def test_self_update_freshenmac_executes_when_outdated(self):
+        """Verifies self_update_freshenmac upgrades freshenmac cask first when outdated."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        outdated_json = json.dumps({
+            "casks": [{
+                "name": "freshenmac",
+                "installed_versions": ["1.1.1"],
+                "current_version": "1.5.0",
+            }]
+        })
+        mock_check = MagicMock()
+        mock_check.__bool__.return_value = True
+        mock_check.stdout = outdated_json
+
+        mock_upgrade = MagicMock()
+        mock_upgrade.__bool__.return_value = True
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=[mock_check, mock_upgrade]) as mock_run:
+            result = brew.self_update_freshenmac()
+            self.assertTrue(result)
+            self.assertTrue(brew.updates_performed)
+            upgrade_call = mock_run.call_args_list[1][0][0]
+            self.assertEqual(upgrade_call, [str(brew.brew_path), 'upgrade', '--cask', '--yes', 'freshenmac'])
+
+    def test_self_update_freshenmac_with_preparsed_version(self):
+        """Verifies self_update_freshenmac skips querying outdated when version string is provided."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        mock_upgrade = MagicMock()
+        mock_upgrade.__bool__.return_value = True
+
+        with patch('freshenmac.homebrew.RunCMD', return_value=mock_upgrade) as mock_run:
+            result = brew.self_update_freshenmac('1.1.1 ═▷ 1.5.0')
+            self.assertTrue(result)
+            self.assertTrue(brew.updates_performed)
+            self.assertEqual(mock_run.call_count, 1)
+            self.assertEqual(mock_run.call_args[0][0], [str(brew.brew_path), 'upgrade', '--cask', '--yes', 'freshenmac'])
+
     def test_resolve_and_update_dependencies_failure_short_circuits(self):
         """Verifies failed dependency stops formula upgrade and skips parent build."""
         brew = HomeBrew(is_arm=True, dry_run=False)
@@ -554,10 +634,9 @@ class TestHomeBrew(unittest.TestCase):
             mock.stderr = ''
             if 'outdated' in cmd_list:
                 mock.stdout = json.dumps({'formulae': [{'name': 'qtbase', 'pinned': False}]})
-            elif 'info' in cmd_list:
-                mock.stdout = json.dumps(
-                    {'formulae': [{'name': 'qtbase', 'build_dependencies': ['cmake'], 'dependencies': []}]},
-                )
+            elif 'deps' in cmd_list and '--for-each' in cmd_list:
+                mock.stdout = 'qtbase: cmake\n'
+                mock.parse_dict.return_value = {'qtbase': 'cmake'}
             elif all(['upgrade' in cmd_list, 'qtbase' in cmd_list]):
                 upgrade_attempts.append(cmd_list)
                 if len(upgrade_attempts) == 1:
@@ -609,15 +688,9 @@ class TestHomeBrew(unittest.TestCase):
                 mock.stdout = json.dumps(
                     {'formulae': [{'name': 'qtbase', 'pinned': False}, {'name': 'automake', 'pinned': False}]},
                 )
-            elif 'info' in cmd_list:
-                mock.stdout = json.dumps(
-                    {
-                        'formulae': [
-                            {'name': 'qtbase', 'build_dependencies': ['cmake', 'ninja'], 'dependencies': []},
-                            {'name': 'automake', 'build_dependencies': [], 'dependencies': []},
-                        ],
-                    },
-                )
+            elif 'deps' in cmd_list and '--for-each' in cmd_list:
+                mock.stdout = 'qtbase: cmake ninja\nautomake:\n'
+                mock.parse_dict.return_value = {'qtbase': 'cmake ninja', 'automake': ''}
             elif 'upgrade' in cmd_list:
                 mock.stdout = '==> Upgrading qtbase'
             else:
@@ -739,6 +812,84 @@ class TestHomeBrew(unittest.TestCase):
                 brew._upgrade_formula('test_formula', '1.0 ═▷ 2.0')
             except KeyboardInterrupt:
                 self.fail("KeyboardInterrupt was not caught and skipped cleanly in upgrade methods")
+
+    def test_resolve_and_update_dependencies_updates_brew_list_in_place(self):
+        """Verifies _resolve_and_update_dependencies updates cached brew_list in place."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        brew.__dict__['brew_list'] = {
+            'outdated_dep': [parse_version('1.0')],
+        }
+
+        def fake_runcmd(cmd, *args, **kwargs):
+            mock = MagicMock()
+            mock.returncode = 0
+            cmd_list = list(cmd)
+            if 'deps' in cmd_list:
+                mock.stdout = 'outdated_dep\n'
+            else:
+                mock.stdout = '==> Upgrading outdated_dep'
+            mock.stderr = ''
+            mock.std_all = mock.stdout
+            mock.__contains__.side_effect = lambda item: item in mock.stdout
+            return mock
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd):
+            outdated = {'outdated_dep': '1.0 ═▷ 2.0'}
+            success = brew._resolve_and_update_dependencies('parent_pkg', outdated)
+            self.assertTrue(success)
+            self.assertIn('brew_list', brew.__dict__)
+            self.assertEqual(str(brew.brew_list['outdated_dep'][0]), '2.0')
+
+    def test_snapshot_installed_single_call(self):
+        """Verifies snapshot_installed executes only brew list --versions and warms cached brew_list."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        executed_cmds = []
+
+        def tracking_runcmd(cmd, *args, **kwargs):
+            executed_cmds.append(list(cmd))
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = 'pkg1 1.0\npkg2 2.0\ncask1 3.0\n'
+            mock.stderr = ''
+            mock.splitlines.return_value = ['pkg1 1.0', 'pkg2 2.0', 'cask1 3.0']
+            return mock
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=tracking_runcmd):
+            snapshots = brew.snapshot_installed()
+            self.assertEqual(len(executed_cmds), 1)
+            self.assertNotIn('--cask', executed_cmds[0])
+            self.assertEqual(snapshots['pkg1'], '1.0')
+            self.assertEqual(snapshots['cask1'], '3.0')
+            # brew_list was populated and does not invoke RunCMD a second time
+            _ = brew.brew_list
+            self.assertEqual(len(executed_cmds), 1)
+            self.assertEqual(str(brew.brew_list['pkg1'][0]), '1.0')
+
+    def test_upgrade_formula_skips_already_upgraded_dependency(self):
+        """Verifies _upgrade_formula and _upgrade_cmake_formulae skip formulae already upgraded as dependencies."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        brew.attempted_updates.add('already_upgraded')
+        outdated = {'remaining_pkg': '1.0 ═▷ 2.0'}
+
+        executed_cmds = []
+
+        def tracking_runcmd(cmd, *args, **kwargs):
+            executed_cmds.append(list(cmd))
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = ''
+            mock.stderr = ''
+            return mock
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=tracking_runcmd):
+            # Act: calling _upgrade_formula with formula not in outdated_formulae and already in attempted_updates
+            res = brew._upgrade_formula('already_upgraded', '1.0 ═▷ 2.0', outdated)
+            self.assertTrue(res)
+            self.assertEqual(len(executed_cmds), 0)
+
+            # Calling _upgrade_cmake_formulae also skips it without executing upgrade
+            brew._upgrade_cmake_formulae(['already_upgraded'], outdated)
+            self.assertFalse(any('already_upgraded' in c for c in executed_cmds))
 
     def test_xcode_property(self):
         """Verifies xcode property creates and caches an Xcode instance with matching settings."""

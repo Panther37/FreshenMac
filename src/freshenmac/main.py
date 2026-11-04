@@ -14,7 +14,7 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261026
+FILE_BUILD = 20261103
 REBOOT_STR = {
     'Default': ['DEFAULT'],
     'Force':   ['FORCE', 'YES'],
@@ -25,17 +25,14 @@ REBOOT_STR = {
 def actions(some_options: argparse.Namespace, logger: Any | None = None) -> bool:
     if some_options.action == 'Uninstall':
         return plist.LaunchAgent(debug_vars=some_options.debug_vars).uninstall()
-    if some_options.action == 'Install':
-        return all(
-            [
-                plist.LaunchAgent(debug_vars=some_options.debug_vars).check_and_install(),
-                plist.PackageSync(debug_vars=some_options.debug_vars).update_files(),
-            ],
-        )
-    if some_options.action == 'Update':
-        return plist.PackageSync(debug_vars=some_options.debug_vars).update_files()
 
-    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
+    if some_options.action == 'Install':
+        return plist.LaunchAgent(debug_vars=some_options.debug_vars).check_and_install()
+
+    if some_options.action in ['Spinner', 'Wave']:
+        return spinner_test()
+
+    logger = logger or util.Logger(dry_run=some_options.dry_run)
     logger.print_store(
         f"\n[Error] main.actions.some_options.action: No instructions for action: {some_options.action}\n",
         component='Main',
@@ -48,31 +45,36 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
         options = yield_arguments(some_options)
     elif some_options:
         # Make sure we have all the expected default options
-        options = yield_arguments([])
+        options = yield_arguments([])  # Do not look at `sys.argv[1:]`
         # Override defaults from above
         overrides = vars(some_options) if isinstance(some_options, argparse.Namespace) else dict(some_options)
         vars(options).update(overrides)
     else:
         options = yield_arguments()
-        if options.debug_vars['debug'] > 1:
-            print(f"Arguments: {sys.argv}")
-            print(f"Options: {vars(options)}")
+    options = yield_rules(options)
+    if options.debug_vars['debug'] > 1:
+        print(f"Arguments: {sys.argv}")
+        print(f"Options: {vars(options)}")
 
-    logger = util.Logger(dry_run=getattr(options, 'dry_run', False))
+    logger = util.Logger(dry_run=options.dry_run)
     logger.store('-', component='- Start -')
 
     if options.action:
         return actions(options, logger)
 
-    if options.schedule:
+    if options.schedule is not None:
         if 'default' in options.schedule.lower():
             options.schedule = DEFAULTS['schedule']
+
         return plist.SavePreferences({'schedule': options.schedule}, debug_vars=options.debug_vars).save()
 
-    if options.save_prefs is not None:
-        return plist.SavePreferences(options.save_prefs, debug_vars=options.debug_vars).save()
+    save_pref = getattr(options, 'save_pref', None)
+    if save_pref is None:
+        save_pref = getattr(options, 'save_prefs', None)
+    if save_pref is not None:
+        return plist.SavePreferences(save_pref, debug_vars=options.debug_vars).save()
 
-    if options.spinner:
+    if getattr(options, 'spinner', False):
         return spinner_test()
 
     credentials = util.TortimerCreds.prompt()
@@ -96,7 +98,7 @@ def perform_updates(
     user_password: str | None = None,
     logger: Any | None = None,
 ) -> bool:
-    logger = logger or util.Logger(dry_run=getattr(some_options, 'dry_run', False))
+    logger = logger or util.Logger(dry_run=some_options.dry_run)
     logger.store(
         f"{APP_INFO['Name']} {APP_INFO['Version']} started by {console_user} (options: {vars(some_options)})",
         component='Main',
@@ -105,11 +107,10 @@ def perform_updates(
     if not plist.StartupRun(debug_vars=some_options.debug_vars, logger=logger).agent.remove_script():
         logger.print_store("Failed to clean up previous startup run.  Continuing anyway...", component='Main')
 
-    if some_options.update:
-        plist.PackageSync(debug_vars=some_options.debug_vars).update_files()
-    # Check if ran with no flags
-    if len(sys.argv) == 1:
-        plist.check_plist(debug_vars=some_options.debug_vars)
+    # Check if ran with no flags (and not --standalone)
+    if not some_options.standalone:
+        if not plist.LaunchAgent(debug_vars=some_options.debug_vars, logger=logger).check_and_install():
+            logger.print_store('Failed to verify or install LaunchAgent.  Continuing anyway...', component='Main')
     mac = computer.MacOS(
         console_user=console_user,
         debug_vars=some_options.debug_vars,
@@ -132,7 +133,8 @@ def spinner_test() -> bool:
         with util.Wave('Testing spinner wave animation'):
             sleep(600)
     except KeyboardInterrupt:
-        pass
+        pass  # Control^C stops the first demo so execution continues to the second demo below
+
     except Exception as err_spin:
         print(f"{APP_INFO['Name']}: {__name__}.{sys._getframe().f_code.co_name} no arguments (Failed): {err_spin}")
         return False
@@ -152,9 +154,6 @@ def spinner_test() -> bool:
 
 def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
     """Processes runtime arguments"""
-    if some_args is None:
-        some_args = sys.argv[1:]
-
     parser = argparse.ArgumentParser(prog=APP_INFO['Name'])
 
     out_group = parser.add_argument_group(
@@ -162,23 +161,32 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         'These options change the output to your terminal',
     )
     out_group.add_argument(
-        '-v', '--verbose', dest='debug', action='count', default=0,
-        help='Increase output verbosity.  '
-             f"Limits output to {DEFAULTS['Debug Limit']} characters unless specified with `--debug-limit`",
+        '-v', '--verbose',
+        action='count',
+        default=0,
+        dest='debug',
+        help=(
+            'Increase output verbosity.  '
+            f"Limits output to {DEFAULTS['Debug Limit']} characters unless specified with `--debug-limit`"
+        ),
     )
     out_group.add_argument(
-        '-l', '--debug-limit', type=int, default=0,
+        '-l', '--debug-limit',
+        default=0,
         help=(
             'Like -vv but truncates character output.  Only `-vv` or `--debug-limit` is needed.  '
             'Use a negative number for no character limit.'
         ),
+        type=int,
     )
     out_group.add_argument(
-        '--trace', action='store_true', default=False,
-        help=f"Maximum verbosity without a character limit.  Equivalent to `--debug-limit=-1 -vvvv`",
+        '--trace',
+        action='store_true',
+        help='Maximum verbosity without a character limit.  Equivalent to `--debug-limit=-1 -vvvv`',
     )
     out_group.add_argument(
-        '--spinner', action='store_true', default=False,
+        '--spinner',
+        action='store_true',
         help='Display the spinner animation indefinitely for visual inspection (Ctrl-C to stop)',
     )
 
@@ -187,17 +195,22 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         'These options change your persistent preferences',
     )
     pref_group.add_argument(
-        '-s', '--save-prefs', const='help', default=None, nargs='?',
-        metavar='PREF',
+        '-s', '--save-pref', '--save-prefs',
+        const='help',
+        dest='save_pref',
         help=(
-            'Save a preference, e.g. `schedule=0 6 * * 1` or `no-mas=iPhoto 408981381`.  '
+            'Save a preference, e.g. `download-speed=10`, `no-mas=iPhoto`, or `schedule=0 6 * * 1`.  '
             'Run with no value to see all options.'
         ),
+        metavar='PREF',
+        nargs='?',
     )
     pref_group.add_argument(
-        '--schedule', '--cron', const='help', default=None, dest='schedule', nargs='?', type=str,
-        metavar='CRON',
+        '--schedule', '--cron',
+        const='help',
         help='Set or update the LaunchAgent schedule using cron syntax (e.g. `0 6 * * 1` or `0 6 1,15 * *`)',
+        metavar='CRON',
+        nargs='?',
     )
 
     cli_group = parser.add_argument_group(
@@ -206,39 +219,35 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
     )
     cli_group.add_argument(
         '-a', '--action',
-        choices=['Install', 'Uninstall', 'Update'],
-        help=f"`Install`, `Update`, or `Uninstall` {APP_INFO['Name']}.  Will not run script.  Case insensitive.",
+        choices=['Install', 'Spinner', 'Uninstall', 'Wave'],
+        help=f"`Install` or `Uninstall` {APP_INFO['Name']}.  Will not run script.  Case insensitive.",
         metavar='VERB',
         type=str.title,
     )
     cli_group.add_argument(
         '-r', '--reboot',
-        choices=sum(REBOOT_STR.values(), []),
+        choices=[a_val for v in REBOOT_STR.values() for a_val in v],  # Add all lists together in REBOOT_STR.values()
         default=0,
         help='Reboot: FORCE, or SKIP reboot at the end of updates, bypassing checks.  Case insensitive.',
         type=str.upper,
     )
-    cli_group.add_argument('--dry-run', action='store_true', default=False, help='Dry run, for testing')
+    cli_group.add_argument('--dry-run', action='store_true', help='Dry run, for testing')
     cli_group.add_argument(
         '-i', '--ignore-mas', '--skip-mas', '--skip-app',
-        dest='ignore_mas', nargs='+', default=None,
-        metavar='APP',
         help='Skip specified App Store application(s) by name or ID for this execution only.',
+        metavar='APP',
+        nargs='+',
     )
     cli_group.add_argument(
-        '-z', '--standalone', action='store_true', default=False,
-        help='Run once without installing anything or setting up a schedule',
+        '-z', '--standalone', action='store_true', help='Run once without installing anything or setting up a schedule',
     )
     cli_group.add_argument('--version', action='version', version=f"{APP_INFO['Name']} {APP_INFO['Version']}")
-    return yield_rules(parser.parse_args(some_args))
+    return parser.parse_args(some_args)
 
 
 def yield_rules(flags: argparse.Namespace) -> argparse.Namespace:
-    # Update
-    if flags.standalone:
-        flags.update = False
-    else:
-        flags.update = util.is_interactive()
+    flags.dry_run = getattr(flags, 'dry_run', False)
+    flags.ignore_mas = set(flags.ignore_mas or [])
     # Reboot
     if flags.reboot:
         reboot_check = str(flags.reboot).upper()
@@ -252,7 +261,7 @@ def yield_rules(flags: argparse.Namespace) -> argparse.Namespace:
     if flags.trace:
         flags.debug_vars = {'debug': 9, 'debug_limit': -1}
         del flags.debug, flags.debug_limit
-        print(json.dumps(vars(flags), indent=2))
+        print(json.dumps({k: list(v) if isinstance(v, set) else v for k, v in vars(flags).items()}, indent=2))
     else:
         if flags.debug_limit and not flags.debug:
             flags.debug = 2

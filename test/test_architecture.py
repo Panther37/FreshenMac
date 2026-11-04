@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Mostly my own sorting.  Uses logic from:
 - https://pypi.org/project/flake8-alphabetize
@@ -8,6 +10,9 @@ import ast
 import re
 import unittest
 from pathlib import Path
+from typing import Any
+
+from freshenmac import config
 
 
 class TestArchitectureAndOrdering(unittest.TestCase):
@@ -20,7 +25,7 @@ class TestArchitectureAndOrdering(unittest.TestCase):
     """
 
     CLASS_TOP = ('__init_subclass__', '__new__', '__init__', '__post_init__', '__call__', '__await__')  # for WPS338
-    FORMATTING_RULES: dict[str, dict[str, str | tuple[str, ...]]] = {
+    FORMATTING_RULES: dict[str, dict[str, Any]] = {
         'AZ':  {  # flake8-alphabetize
             '100': 'Import statements are in the wrong order',
             '200': 'The names in the import from are in the wrong order',
@@ -29,9 +34,11 @@ class TestArchitectureAndOrdering(unittest.TestCase):
             '500': 'The names in the exception handler list are in the wrong order',
         },
         'P37': {  # Developer
+            'JUMP_LINE':   (ast.Break, ast.Continue, ast.Pass, ast.Raise, ast.Return, ast.Yield, ast.YieldFrom),
             'SORT_CHRONO': ('Second', 'Minute', 'Hour', 'Day', 'Weekday', 'Month', 'Year'),
             'SORT_CRON':   ('Minute', 'Hour', 'Day', 'Month', 'Weekday'),
             'SORT_OTHER':  'Exempt from sorting',
+            'UNUSED_OKAY': 'Function is not used right now but could be in later releases',
         },
         'WPS': {  # wemake-python-styleguide
             '338': 'Wrong method order in class',
@@ -40,6 +47,10 @@ class TestArchitectureAndOrdering(unittest.TestCase):
     PATTERN: dict[str, re.Pattern[str]] = {
         'noqa':        re.compile(r"#\s*noqa:\s*(?P<rule>[\w-]+)", re.IGNORECASE),
         'guide, code': re.compile(r"(?P<guide>[A-Z]+)(?P<code>[0-9]+)"),
+    }
+    TIMEOUT_RULES: dict[str, Any] = {
+        'Maximum': max(list(x for k, v in config.TIMEOUT.items() if k != 'All' for x in v.values())),
+        'Minimum': min(list(x for k, v in config.TIMEOUT.items() if k != 'All' for x in v.values())),
     }
 
     @classmethod
@@ -220,7 +231,11 @@ class TestArchitectureAndOrdering(unittest.TestCase):
             cleaned.append(node.name)
         return cleaned
 
-    def _get_noqa_rule(self, filename: str, node: ast.AST) -> tuple[str, str] | None:
+    def _get_noqa_rule(
+        self,
+        filename: str,
+        node: ast.stmt | ast.expr | ast.excepthandler,
+    ) -> tuple[str, str] | None:
         """
         Extracts and validates a '# noqa: ...' directive on the given AST node's header/opening lines.
         Returns (guide, code) if present and registered in FORMATTING_RULES, otherwise None.
@@ -352,6 +367,43 @@ class TestArchitectureAndOrdering(unittest.TestCase):
                 self._check_top_level_imports_and_all(filename, tree)
                 self._check_exception_handlers(filename, tree)
 
+    def test_jump_statements_followed_by_empty_line(self):
+        """
+        Verifies that jump and pass statements (break, continue, pass, raise, return, yield)
+        across all files are followed by an empty line, unless exempted by '# noqa: P37-JUMP_LINE',
+        and that every pass statement includes an inline comment explaining why pass is used.
+        """
+        jump_types = self.FORMATTING_RULES['P37']['JUMP_LINE']
+        for filename, tree in sorted(self.trees.items()):
+            lines = self.sources[filename]
+            for node in ast.walk(tree):
+                if not isinstance(node, jump_types) or not isinstance(node, (ast.stmt, ast.expr)):
+                    continue
+
+                if self._get_noqa_rule(filename, node) == ('P37', 'JUMP_LINE'):
+                    continue
+
+                end_line = node.end_lineno or node.lineno
+                if isinstance(node, ast.Pass):
+                    stmt_line = lines[end_line - 1]
+                    with self.subTest(file=filename, line=end_line, check='pass_comment'):
+                        self.assertIn(
+                            '#',
+                            stmt_line,
+                            f"Pass statement in {filename}:{end_line} must include an inline comment "
+                            f"explaining why 'pass' is used.",
+                        )
+
+                if end_line < len(lines):
+                    next_line = lines[end_line]
+                    with self.subTest(file=filename, line=end_line):
+                        self.assertEqual(
+                            next_line.strip(),
+                            '',
+                            f"Jump statement in {filename}:{end_line} ('{lines[end_line - 1].strip()}') "
+                            f"must be followed by an empty line, got: '{next_line.strip()}'",
+                        )
+
     def test_keyword_only_parameters_alphabetical_order(self):
         """
         Verifies that keyword-only arguments across all functions and methods are sorted alphabetically.
@@ -417,6 +469,24 @@ class TestArchitectureAndOrdering(unittest.TestCase):
 
             for cls_node in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
                 self._check_shutdown_class(py_file.name, cls_node)
+
+    def test_timeout_all_values(self):
+        """
+        Verifies that TIMEOUT['All'] values in config.py match the architectural rules defined in TIMEOUT_RULES.
+        """
+        self.assertEqual(
+            set(config.TIMEOUT['All'].keys()),
+            set(self.TIMEOUT_RULES.keys()),
+            f"TIMEOUT['All'] keys do not match TIMEOUT_RULES keys: "
+            f"{set(config.TIMEOUT['All'].keys())} != {set(self.TIMEOUT_RULES.keys())}",
+        )
+        for key, value in config.TIMEOUT['All'].items():
+            expected = self.TIMEOUT_RULES.get(key, 'Not in TIMEOUT_RULES!')
+            self.assertEqual(
+                value,
+                expected,
+                f"TIMEOUT['All']['{key}'] ({value}) does not match expected ({expected})",
+            )
 
     def test_top_level_functions_alphabetical_order(self):
         """

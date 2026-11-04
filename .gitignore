@@ -18,5 +18,5 @@ build/
 .idea/
 
 # Project
-logs/
+# logs/
 test/large_tests/

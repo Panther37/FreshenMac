@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -15,7 +16,7 @@ from freshenmac.config import APP_INFO, IDLE_THRESHOLD
 if TYPE_CHECKING:
     from freshenmac.computer import MacOS
 
-FILE_BUILD = 20261015
+FILE_BUILD = 20261103
 
 
 @dataclass
@@ -27,22 +28,6 @@ class ActionState:
 
     def __bool__(self) -> bool:
         return any(getattr(self, x.name) for x in fields(self))
-
-    def __getitem__(self, item: str) -> Any:
-        return getattr(self, item.lower())
-
-    def __setitem__(self, item: str, value: Any) -> None:
-        attr = item.lower()
-        if hasattr(self, attr) and isinstance(value, list):
-            setattr(self, attr, value)
-        else:
-            raise KeyError(f"Invalid {self.__class__.__name__} key: {item}")
-
-
-@dataclass
-class DeferState(ActionState):
-    running: list[str] = field(default_factory=list)
-    error: list[str] = field(default_factory=list)
 
 
 class Reboot:
@@ -92,6 +77,18 @@ class Reboot:
         self.log_file = log_file or util.get_log_file()
         self.logger = logger or util.Logger(dry_run=self.dry_run, log_file=self.log_file)
         self.logger.component = 'Reboot'
+        self.reboot = getattr(self.computer, 'reboot', RebootState())
+
+    def _get_pending_updates(self) -> list[str]:
+        """Collects deduplicated pending and staged updates for the reboot prompt dialog."""
+
+        pending_items: set[str] = set()
+        if self.reboot:
+            pending_items.update(self.reboot.required)
+        pending_items.update(self.computer.softwareupdate.summary.get('downloaded', []))
+        if not pending_items and self.reboot:
+            pending_items.update(i for i in self.reboot.suggested if 'Uptime' not in i)
+        return sorted(pending_items)
 
     def _sleep(self, seconds: int | float) -> None:
         """Helper to sleep, respecting dry_run for testing."""
@@ -101,7 +98,7 @@ class Reboot:
         else:
             time.sleep(seconds)
 
-    def attempt_authrestart(self) -> bool:
+    def attempt_authrestart(self, delay_minutes: int = 1) -> bool:
         """
         Attempts "fdesetup authrestart" if FileVault is active and supported.
         Allows the Mac to reboot past the FileVault screen directly into macOS to apply updates.
@@ -130,12 +127,12 @@ class Reboot:
 </dict>
 </plist>"""[1:]
 
-        a_cmd = ['fdesetup', 'authrestart', '-delayminutes', '1', '-inputplist']
+        a_cmd = ['fdesetup', 'authrestart', '-delayminutes', str(delay_minutes), '-inputplist']
         if self.debug_vars.get('debug', 0) > 2:
             a_cmd.append('-verbose')
         authrestart_cmd = util.RunCMD(
             a_cmd,
-            timeout=300,
+            timeout=delay_minutes * 60 + 240,
             to_input=plist_data,
             need_root=True,
             **self.debug_vars,
@@ -146,7 +143,8 @@ class Reboot:
 
         else:
             self.log(
-                f"FileVault configuration tool's authenticated restart (reboot) failed (code {authrestart_cmd.returncode}).",
+                "FileVault configuration tool's authenticated restart (reboot) "
+                f"failed (code {authrestart_cmd.returncode}).",
             )
             return False
 
@@ -173,6 +171,7 @@ class Reboot:
                 if running(0, str(poll_status)):
                     self.log("Time Machine backup stopped successfully.")
                     break
+
             else:
                 self.log("Time Machine backup did not stop within 100s.  Proceeding with escalation.")
 
@@ -250,7 +249,15 @@ class Reboot:
             self.log('[Dry-run] Would auto-save open documents and attempt authrestart / System Events restart')
             return True
 
-        # 1. Check FileVault authrestart first
+        # 1. Check for staged macOS update
+        if pending_os := getattr(self.computer, 'pending_os_update', ''):
+            self.log(f"Initiating installation of staged macOS update '{pending_os}' with system restart...")
+            if self.computer.filevault_enabled:
+                self.attempt_authrestart(delay_minutes=5)
+            self.computer.softwareupdate.install_label(pending_os, force_restart_now=True)
+            return True
+
+        # 2. Check FileVault authrestart first
         if self.computer.filevault_enabled:
             if not self.attempt_authrestart():
                 self.log(
@@ -259,7 +266,7 @@ class Reboot:
                 )
                 return False
 
-        # 2. Tell scriptable apps to cleanly save existing open documents
+        # 3. Tell scriptable apps to cleanly save existing open documents
         save_script = [
             'tell application "System Events"',
             '    set appList to (name of every process whose background only is false and name is not "Finder")',
@@ -274,7 +281,7 @@ class Reboot:
         return bool(util.RunAppleScript('tell application "System Events" to restart', **self.debug_vars))
 
     @contextmanager
-    def keep_awake(self):
+    def keep_awake(self) -> Iterator:
         """Spawns caffeinate via RunCMD to prevent sleep while reboot workflow runs."""
         pid = os.getpid()
         started = False
@@ -354,16 +361,16 @@ class Reboot:
 
     def prompt_initial(self) -> str:
         """
-        Displays initial prompt showing uptime with 'Restart Now' and 'Snooze'.
+        Displays initial prompt showing uptime with 'Restart Now' and 'Snooze' (defaulting to 'Snooze').
         If all users are already idle for >= IDLE_THRESHOLD['Seconds'], automatically returns 'now'.
         Otherwise, displays dialog with 'giving up after' set to remaining idle seconds.
-        If the dialog times out and IDLE_THRESHOLD['Seconds'] of idle is reached, automatically returns 'now'.
+        If the dialog times out without user action, automatically defaults to 'snooze'.
         Returns 'now' or 'snooze'.
         """
 
         def run_snooze() -> str:
             self.snoozes_left -= 1
-            if self.computer.os_summary['available'] or self.computer.os_summary['downloaded']:
+            if self.computer.softwareupdate.summary['available'] or self.computer.softwareupdate.summary['downloaded']:
                 util.RunCMD(
                     ['open', 'x-apple.systempreferences:com.apple.Software-Update-Settings.extension'],
                     **self.debug_vars,
@@ -384,9 +391,17 @@ class Reboot:
 
         remaining_until_idle = self.remaining_idle_time()
         uptime_days = self.computer.uptime_days
+        pending_items = self._get_pending_updates()
+
+        if pending_items:
+            items_str = '\n'.join(f"  • {item}" for item in pending_items)
+            reason = f"A system restart is required for updates:\n{items_str}"
+        else:
+            reason = "A system restart is required for updates."
+
         dialog = (
-            f"The computer has been up for {uptime_days:.3f} days.\n\n"
-            "A system restart is required for updates.\n"
+            f"The computer has been up for {uptime_days:.2f} days.\n\n"
+            f"{reason}\n\n"
             f"{self.snoozes_left} Snooze{'s' if self.snoozes_left != 1 else ''} for {IDLE_THRESHOLD['Minutes']} "
             "minutes available."
         )
@@ -400,7 +415,7 @@ class Reboot:
         dialog_cmd = util.RunAppleScript.dialog(
             dialog,
             buttons=('Snooze', 'Restart Now'),
-            default_button='Restart Now',
+            default_button='Snooze',
             giving_up_after=remaining_until_idle,
             icon='caution',
             **self.debug_vars,
@@ -413,16 +428,21 @@ class Reboot:
             self.log("User clicked 'Snooze'.")
             return run_snooze()
 
-        # Check if dialog closed because user reached IDLE_THRESHOLD['Seconds'] idle threshold
-        if 'gave up:true' in dialog_cmd or self.computer.is_idle:
+        # If dialog timed out without response, default to Snooze
+        if 'gave up:true' in dialog_cmd:
             self.log(
-                f"Prompt timed out and user has been idle for >= {IDLE_THRESHOLD['Minutes']} minutes.  "
-                "Automatically selecting 'Restart Now'.",
+                f"Prompt timed out after {remaining_until_idle}s.  "
+                f"Defaulting to 'Snooze' ({self.snoozes_left} left).",
             )
-            return 'now'
+            return run_snooze()
 
         if not dialog_cmd:
-            self.log(f"Dialog failed to display (code {dialog_cmd.returncode}): {dialog_cmd.error or 'unknown error'}")
+            err_msg = dialog_cmd.stderr or dialog_cmd.error or 'unknown error'
+            self.log(f"Dialog failed to display (code {dialog_cmd.returncode}): {err_msg}")
+            if self.computer.is_idle:
+                self.log("Screen is non-interactive / locked and system is idle. Proceeding to 'Restart Now'.")
+                return 'now'
+
             return run_snooze()
 
         self.log("User dismissed dialog or selected 'Snooze'.")
@@ -564,8 +584,14 @@ class Reboot:
         """Entry point for the reboot workflow.  Wrapped with caffeinate to prevent sleep."""
         print_why = ''
         if why_reboot:
-            print_why = json.dumps({k: ', '.join(v) for k, v in asdict(why_reboot).items() if v}, indent=2)
+            self.reboot = why_reboot
+            print_why = json.dumps(
+                {k: ', '.join(v) for k, v in asdict(why_reboot).items() if v},
+                indent=2,
+                ensure_ascii=False,
+            )
         self.log(f"Starting reboot workflow...\n{print_why}")
+
         with self.keep_awake():
             choice = self.prompt_initial()
             if choice == 'now':
@@ -573,7 +599,7 @@ class Reboot:
             else:
                 self.run_snooze_flow()
 
-    def turn_off(self) -> None:
+    def turn_off(self) -> None:  # noqa P37-UNUSED_OKAY
         """Attempts to shut down / power off the computer."""
         if self.dry_run:
             self.log('[Dry-run] Would execute: sudo shutdown -h now')
@@ -590,6 +616,5 @@ class Reboot:
 
 @dataclass
 class RebootState(ActionState):
-    requested: list[str] = field(default_factory=list)
     required: list[str] = field(default_factory=list)
     suggested: list[str] = field(default_factory=list)

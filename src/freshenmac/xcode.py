@@ -9,7 +9,7 @@ from typing import Any
 
 from freshenmac.util import Logger, RunCMD, is_interactive
 
-pleasesdfasdfasdfasdfvasdcvasdfasdsdafasdfFILE_BUILD = 20261026
+FILE_BUILD = 20261103
 PATTERN: dict[str, re.Pattern[str]] = {
     'Command Line Tools': re.compile(r"\*\s*(?:Label:\s*)?([^\n\r*]+Command Line Tools[^\n\r*]*)", re.IGNORECASE),
 }
@@ -31,7 +31,7 @@ class Xcode:
         Attempts to accept the Xcode license via interactive sudo prompt or cached sudo.
         :return: True if license was accepted, False otherwise.
         """
-        if not self.is_installed or not self.xcodebuild_path:
+        if not self.is_installed or self.xcodebuild_path == Path(''):
             return True
 
         self.log('[License Required] The Xcode license agreement has not been accepted.')
@@ -55,6 +55,7 @@ class Xcode:
             if license_cmd:
                 self.log('Xcode license agreement accepted successfully.')
                 return True
+
         else:
             license_cmd = RunCMD(
                 xcode_license_cmd,
@@ -174,7 +175,7 @@ To install manually, run in Terminal:
                 try:
                     flag_file.unlink()
                 except OSError:
-                    pass
+                    pass  # Best-effort cleanup of temp flag file; do not mask install result
 
     def install_clt_interactive(self) -> bool:
         """
@@ -215,7 +216,7 @@ To install manually, run in Terminal:
     @property
     def is_installed(self) -> bool:
         """Returns True if Xcode or xcodebuild binary is installed on the system."""
-        return self.xcodebuild_path is not None
+        return self.xcodebuild_path != Path('')
 
     @property
     def is_license_accepted(self) -> bool:
@@ -223,7 +224,7 @@ To install manually, run in Terminal:
         Checks if Xcode license agreement has been accepted.
         Returns True if accepted (exit code 0), False if pending (exit code 69 or non-zero).
         """
-        if not self.xcodebuild_path:
+        if self.xcodebuild_path == Path(''):
             return True
 
         license_cmd = RunCMD([str(self.xcodebuild_path), '-license', 'status'], **self.debug_vars)
@@ -237,14 +238,15 @@ To install manually, run in Terminal:
 
     def run_first_launch(self) -> bool:
         """Installs required additional Xcode packages silently via root to avoid post-reboot GUI prompts."""
-        if not self.is_installed or not self.xcodebuild_path or self.dry_run:
+        if not self.is_installed or self.xcodebuild_path == Path('') or self.dry_run:
             return True
+
         cmd = RunCMD([str(self.xcodebuild_path), '-runFirstLaunch'], need_root=True, timeout=120, **self.debug_vars)
         return bool(cmd)
 
     @cached_property
-    def xcodebuild_path(self) -> Path | None:
-        """Locates xcodebuild binary from /Applications/Xcode.app or PATH."""
+    def xcodebuild_path(self) -> Path:
+        """Locates xcodebuild binary from /Applications/Xcode.app or PATH. Returns Path('') if not found."""
         xcodebuild_candidate = Path('/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild')
         if xcodebuild_candidate.is_file():
             return xcodebuild_candidate
@@ -253,4 +255,4 @@ To install manually, run in Terminal:
         if which_xcode:
             return Path(which_xcode)
 
-        return None
+        return Path('')

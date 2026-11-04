@@ -31,6 +31,51 @@ class TestAppStore(unittest.TestCase):
         self.reboot = RebootState()
         self.app_store = AppStore(dry_run=True, reboot=self.reboot)
 
+    def test_calculate_timeout_scales_by_app_size(self):
+        """Verifies calculate_timeout computes dynamic timeout based on app size, speed, and buffer."""
+        app_store = AppStore(dry_run=True, download_speed_mbps=5.0)
+        with patch.object(app_store, 'get_app_size_mb', return_value=194.0):
+            timeout = app_store.calculate_timeout('1474276998')
+            self.assertEqual(timeout, 688)
+
+        # Fallback when size is 0.0
+        with patch.object(app_store, 'get_app_size_mb', return_value=0.0):
+            timeout = app_store.calculate_timeout('unknown_app')
+            self.assertEqual(timeout, app_store.timeout)
+
+        # Fallback to preference / default speed when download_speed_mbps is 0.0
+        app_store_default = AppStore(dry_run=True)
+        self.assertEqual(app_store_default.download_speed_mbps, 0.0)
+        with patch.object(app_store_default, 'get_app_size_mb', return_value=194.0), patch(
+            'freshenmac.plist.load_preferences', return_value={'download-speed': 5.0},
+        ):
+            self.assertEqual(app_store_default.calculate_timeout('1474276998'), 688)
+
+    def test_get_app_size_mb_gb_and_kb(self):
+        """Verifies get_app_size_mb correctly parses MB, GB, and KB size strings from mas info."""
+        app_store = AppStore(dry_run=False)
+        app_store.__dict__['mas_path'] = Path('/usr/local/bin/mas')
+
+        # Test MB
+        mock_mb = make_cmd(stdout="App ▁▁ HP\nSize ▁▁ 194 MB\n")
+        with patch('freshenmac.mas.util.RunCMD', return_value=mock_mb):
+            self.assertEqual(app_store.get_app_size_mb('1474276998'), 194.0)
+
+        # Test GB
+        mock_gb = make_cmd(stdout="App ▁▁ Xcode\nSize ▁▁ 12.5 GB\n")
+        with patch('freshenmac.mas.util.RunCMD', return_value=mock_gb):
+            self.assertEqual(app_store.get_app_size_mb('497799835'), 12800.0)
+
+        # Test KB
+        mock_kb = make_cmd(stdout="App ▁▁ Utility\nSize ▁▁ 512 KB\n")
+        with patch('freshenmac.mas.util.RunCMD', return_value=mock_kb):
+            self.assertEqual(app_store.get_app_size_mb('12345'), 0.5)
+
+        # Test failure/missing returns 0.0
+        mock_fail = make_cmd(stdout="Error: not found\n", errno=1)
+        with patch('freshenmac.mas.util.RunCMD', return_value=mock_fail):
+            self.assertEqual(app_store.get_app_size_mb('99999'), 0.0)
+
     def test_has_mas_dry_run_missing(self):
         """Verifies has_mas returns False in dry-run mode when binary is missing, without attempting brew install."""
         self.app_store.__dict__['mas_path'] = Path('')
@@ -76,6 +121,8 @@ class TestAppStore(unittest.TestCase):
         self.assertFalse(self.app_store.updates_performed)
         self.assertEqual(self.app_store.summary, {'installed': {}, 'unchanged': {}, 'updated': {}})
         self.assertEqual(self.app_store.reboot.required, [])
+        self.assertEqual(self.app_store.ignore_mas, set())
+        self.assertIsInstance(self.app_store.ignore_mas, set)
 
     def test_mas_path_candidates(self):
         """Verifies resolution of mas binary relative to brew_path."""
@@ -176,14 +223,46 @@ class TestAppStore(unittest.TestCase):
         ) as mock_schedule:
             app_store.update()
 
-            # Must NOT mark reboot required, must record in defer.running, and schedule one-shot startup agent
+            # Must NOT mark reboot required, and must schedule one-shot startup agent
             self.assertFalse(self.reboot.required)
-            self.assertTrue(app_store.defer.running)
+            self.assertIn(
+                'App Store: Logic Pro (12.3 ═▷ 12.3.1) deferred (app currently running)',
+                self.reboot.suggested,
+            )
             mock_schedule.assert_called_once()
             self.assertEqual(app_store.summary['unchanged']['Logic Pro'], '12.3 ═▷ 12.3.1')
             for call_args in mock_cmd.call_args_list:
                 args = call_args[0][0]
                 self.assertNotIn('upgrade', args)
+
+    def test_update_suggests_reboot_on_output_caveat(self):
+        """Verifies mas upgrade stdout containing reboot or restart appends to reboot.suggested."""
+        app_store = AppStore(dry_run=False, reboot=self.reboot)
+        outdated_out = "123456 TestApp (1.0 -> 2.0)"
+
+        def fake_runcmd(cmd, *args, **kwargs):
+            if 'outdated' in cmd:
+                return make_cmd(stdout=outdated_out)
+            if 'upgrade' in cmd:
+                return make_cmd(stdout="Upgraded TestApp. Please restart your system to complete installation.")
+            return make_cmd(errno=0)
+
+        with patch.object(
+            AppStore, 'has_mas', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            AppStore, 'mas_path', new_callable=PropertyMock, return_value=Path('/usr/local/bin/mas'),
+        ), patch(
+            'freshenmac.mas.util.RunCMD', side_effect=fake_runcmd,
+        ), patch(
+            'freshenmac.mas.util.is_app_running', return_value=False,
+        ), patch(
+            'freshenmac.mas.util.RunCMD.can_sudo', return_value=True,
+        ):
+            app_store.update()
+            self.assertIn(
+                'App Store: Upgraded TestApp (1.0 ═▷ 2.0) suggested a reboot',
+                self.reboot.suggested,
+            )
 
     def test_update_triggers_xcode_license_fix(self):
         """Verifies upgrading Xcode triggers an automated license agreement acceptance check."""
