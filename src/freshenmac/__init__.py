@@ -2,6 +2,7 @@ from freshenmac import (
     boot,
     computer,
     config,
+    fix,
     homebrew,
     mas,
     plist,
@@ -10,6 +11,6 @@ from freshenmac import (
     xcode,
 )
 
-FILE_BUILD = 20261005
+FILE_BUILD = 20261109
 __description__ = config.APP_INFO['Description']
 __version__ = config.APP_INFO['Version']

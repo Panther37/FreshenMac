@@ -14,7 +14,7 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261104
 REBOOT_STR = {
     'Default': ['DEFAULT'],
     'Force':   ['FORCE', 'YES'],
@@ -180,14 +180,14 @@ def yield_arguments(some_args: list[str] | None = None) -> argparse.Namespace:
         type=int,
     )
     out_group.add_argument(
-        '--trace',
-        action='store_true',
-        help='Maximum verbosity without a character limit.  Equivalent to `--debug-limit=-1 -vvvv`',
-    )
-    out_group.add_argument(
         '--spinner',
         action='store_true',
         help='Display the spinner animation indefinitely for visual inspection (Ctrl-C to stop)',
+    )
+    out_group.add_argument(
+        '--trace',
+        action='store_true',
+        help='Maximum verbosity without a character limit.  Equivalent to `--debug-limit=-1 -vvvv`',
     )
 
     pref_group = parser.add_argument_group(

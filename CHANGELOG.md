@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Please wrap at 120 characters.
 
+## [2.1.0] - 2026-11-09
+
+### Added
+- Added `cwd` parameter to `RunCMD` and `SimRunCMD` in `src/freshenmac/util.py` and `test/sim_run_cmd.py`, forwarding
+  explicit working directory settings directly to `subprocess.run()`.
+- Added working directory isolation to `PrivilegedCMD.run_privileged` in `src/freshenmac/util.py`, defaulting `cwd`
+  to `/` so privileged system commands do not inherit invalid, deleted, or unmounted caller directories and avoid
+  spurious `shell-init: getcwd` warnings.
+- Added unit tests in `test/test_run_cmd.py` verifying `RunCMD` working directory inheritance and `PrivilegedCMD`
+  root path isolation.
+- Added autonomous diagnostic and self-healing recovery engine in `src/freshenmac/fix.py` with `RecoveryEngine`
+  (supporting dynamic subsystem rule resolution via `target=self`), concrete `FailureInfo` (featuring `from_runcmd()`),
+  and `fix.rules_homebrew()` providing lightweight dictionary-based diagnostic rules for Python interpreter mismatches
+  (`BrewPythonMismatch`), unaccepted Xcode licenses (`XcodeLicense`), stranded git tap locks (`BrewGitRebase`),
+  unlinked keg conflicts (`BrewLinkConflict`), and transient network dropouts (`TransientNetwork`).
+- Added `HomeBrew.reinstall_dependency()` in `src/freshenmac/homebrew.py` to automatically reinstall and repair
+  broken build tools (such as `meson` or `ninja`) when runtime interpreter mismatches occur during source builds.
+- Added `Xcode.is_license_error()` and unified Darwin SDK build license detection in `src/freshenmac/xcode.py`,
+  allowing any subsystem to detect and recover from unaccepted Xcode license agreement errors.
+- Added comprehensive unit and integration tests in `test/test_fix.py`, `test/test_xcode.py`, and
+  `test/test_homebrew.py` verifying failure diagnosis, automated dependency repair, bounded single-retry execution,
+  and concrete type safety.
+- Added real recorded CLI fixture integration tests in `test/test_fixtures.py` (including
+  `test_brew_deps_qemu_fixture`, `test_brew_reinstall_meson_fixture`, `test_brew_upgrade_portable_ruby_fixture`,
+  `test_brew_upgrade_qemu_python_mismatch_fixture`, `test_fdesetup_authrestart_fixture`, `test_fdesetup_status_fixture`,
+  `test_mas_info_fixture`, `test_mas_outdated_fixture`, `test_sw_vers_product_version_fixture`,
+  `test_xcodebuild_license_accept_fixture`, and `test_xcodebuild_license_status_fixture`) validating dependency graph
+  parsing, Intel x86_64 warning filtering, bottle upgrades, FileVault status/authrestart detection, App Store
+  size/outdated parsing, and Xcode license accept/status handling.
+
 ## [2.0.0] - 2026-11-03
 
 ### Added

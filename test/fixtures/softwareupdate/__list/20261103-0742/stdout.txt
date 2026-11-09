@@ -1,0 +1,6 @@
+Software Update Tool
+
+Finding available software
+Software Update found the following new or updated software:
+* Label: macOS Sequoia 15.8.2-24H232
+	Title: macOS Sequoia 15.8.2, Version: 15.8.2, Size: 1066742KiB, Recommended: YES, Action: restart, 

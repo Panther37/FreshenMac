@@ -1,0 +1,15 @@
+{
+  "cmd_args": [
+    "sudo",
+    "xcodebuild",
+    "-license",
+    "accept"
+  ],
+  "cmd_str": "sudo xcodebuild -license accept",
+  "need_root": true,
+  "need_shell": false,
+  "returncode": 1,
+  "run_time": 0,
+  "stderr": "sudo: a password is required\n",
+  "stdout": ""
+}

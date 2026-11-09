@@ -63,7 +63,7 @@ class TestSoftwareUpdate(unittest.TestCase):
 
     def test_calculate_timeout_dynamic(self):
         """Verifies calculate_timeout scales timeout based on size, buffer, and speed."""
-        fixture_path = Path(__file__).resolve().parent / 'fixtures/20261103-0742_softwareupdate__list/stdout.txt'
+        fixture_path = Path(__file__).resolve().parent / 'fixtures/softwareupdate/__list/20261103-0742/stdout.txt'
         content = fixture_path.read_text(encoding='utf-8')
         swu = SoftwareUpdate(download_speed_mbps=100.0)
         swu.softwareupdate_list = make_cmd(stdout=content)
@@ -75,7 +75,7 @@ class TestSoftwareUpdate(unittest.TestCase):
 
     def test_calculate_timeout_fallback_to_defaults(self):
         """Verifies calculate_timeout falls back to default preferences when download_speed_mbps is 0."""
-        fixture_path = Path(__file__).resolve().parent / 'fixtures/20261103-0742_softwareupdate__list/stdout.txt'
+        fixture_path = Path(__file__).resolve().parent / 'fixtures/softwareupdate/__list/20261103-0742/stdout.txt'
         content = fixture_path.read_text(encoding='utf-8')
         swu = SoftwareUpdate(download_speed_mbps=0.0)
         swu.softwareupdate_list = make_cmd(stdout=content)
@@ -171,7 +171,7 @@ class TestSoftwareUpdate(unittest.TestCase):
 
     def test_get_update_size_mb_from_fixture(self):
         """Verifies get_update_size_mb extracts size in MB from softwareupdate --list output."""
-        fixture_path = Path(__file__).resolve().parent / 'fixtures/20261103-0742_softwareupdate__list/stdout.txt'
+        fixture_path = Path(__file__).resolve().parent / 'fixtures/softwareupdate/__list/20261103-0742/stdout.txt'
         content = fixture_path.read_text(encoding='utf-8')
         swu = SoftwareUpdate()
         swu.softwareupdate_list = make_cmd(stdout=content)

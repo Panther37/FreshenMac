@@ -9,9 +9,14 @@ from typing import Any
 
 from freshenmac.util import Logger, RunCMD, is_interactive
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261107
 PATTERN: dict[str, re.Pattern[str]] = {
     'Command Line Tools': re.compile(r"\*\s*(?:Label:\s*)?([^\n\r*]+Command Line Tools[^\n\r*]*)", re.IGNORECASE),
+    'License Required':   re.compile(
+        r"agree to the terms of the Xcode(?:/iOS)? license|"
+        r"xcodebuild\s+-license",
+        re.IGNORECASE,
+    ),
 }
 
 
@@ -174,8 +179,9 @@ To install manually, run in Terminal:
             if flag_file.is_file():
                 try:
                     flag_file.unlink()
-                except OSError:
-                    pass  # Best-effort cleanup of temp flag file; do not mask install result
+                except OSError as err_os:
+                    # Best-effort cleanup of temp flag file; do not mask install result
+                    self.log(f"[Xcode CLT] Failed to delete file {flag_file}: {err_os}")
 
     def install_clt_interactive(self) -> bool:
         """
@@ -232,6 +238,14 @@ To install manually, run in Terminal:
             return True
 
         return bool(license_cmd)
+
+    @staticmethod
+    def is_license_error(text: str) -> bool:
+        """Evaluates whether command output text indicates an unaccepted Xcode license agreement."""
+        if not text:
+            return False
+
+        return bool(PATTERN['License Required'].search(text))
 
     def log(self, a_message: str) -> None:
         self.logger.print_store(a_message, 'Xcode')

@@ -7,6 +7,7 @@ from freshenmac.config import PATHS
 from freshenmac.util import (
     Logger,
     PlaySound,
+    PrivilegedCMD,
     RETURNCODE,
     RunAppleScript,
     RunCMD,
@@ -329,6 +330,40 @@ class TestPlaySound(unittest.TestCase):
                 mock_cmd.assert_called_with(['afplay', ps.sound], interactive=True)
 
 
+class TestPrivilegedCMD(unittest.TestCase):
+    """
+    Unit tests for PrivilegedCMD base class.
+
+    Verifies run_privileged execution, interactive TTY prompting, and cwd isolation.
+    """
+
+    def test_run_privileged_defaults_cwd_root(self):
+        """Verifies run_privileged defaults cwd to Path('/') to isolate root commands."""
+        class DummyPrivileged(PrivilegedCMD):
+            debug_vars = {'debug': 0, 'debug_limit': 0}
+
+        obj = DummyPrivileged()
+        with patch('freshenmac.util.RunCMD') as mock_run:
+            mock_run.return_value = True
+            obj.run_privileged(['echo', 'test'])
+            mock_run.assert_called_once()
+            _, kwargs = mock_run.call_args
+            self.assertEqual(kwargs['cwd'], Path('/'))
+
+    def test_run_privileged_forwards_custom_cwd(self):
+        """Verifies run_privileged forwards explicit cwd to RunCMD."""
+        class DummyPrivileged(PrivilegedCMD):
+            debug_vars = {'debug': 0, 'debug_limit': 0}
+
+        obj = DummyPrivileged()
+        with patch('freshenmac.util.RunCMD') as mock_run:
+            mock_run.return_value = True
+            obj.run_privileged(['echo', 'test'], cwd=Path('/tmp'))
+            mock_run.assert_called_once()
+            _, kwargs = mock_run.call_args
+            self.assertEqual(kwargs['cwd'], Path('/tmp'))
+
+
 class TestRunAppleScript(unittest.TestCase):
     """
     Unit tests for RunAppleScript executor.
@@ -538,6 +573,30 @@ class TestRunCMD(unittest.TestCase):
             self.assertEqual(cmd.returncode, 130)
             self.assertIn('canceled by user', cmd.stderr)
 
+    def test_cwd_default_none(self):
+        """Verifies RunCMD leaves cwd as None by default for normal process inheritance."""
+        with patch('subprocess.run') as mock_sub:
+            mock_sub.return_value.returncode = 0
+            mock_sub.return_value.stdout = ''
+            mock_sub.return_value.stderr = ''
+            cmd = RunCMD(['echo', 'test'])
+            self.assertIsNone(cmd.cwd)
+            mock_sub.assert_called_once()
+            _, kwargs = mock_sub.call_args
+            self.assertIsNone(kwargs['cwd'])
+
+    def test_cwd_explicit(self):
+        """Verifies RunCMD passes stringified cwd to subprocess.run."""
+        with patch('subprocess.run') as mock_sub:
+            mock_sub.return_value.returncode = 0
+            mock_sub.return_value.stdout = ''
+            mock_sub.return_value.stderr = ''
+            cmd = RunCMD(['echo', 'test'], cwd=Path('/tmp'))
+            self.assertEqual(cmd.cwd, Path('/tmp'))
+            mock_sub.assert_called_once()
+            _, kwargs = mock_sub.call_args
+            self.assertEqual(kwargs['cwd'], '/tmp')
+
     def test_debug_limit_default_and_custom(self):
         """Verifies debug_limit clamps verbose command output printing."""
         with patch('subprocess.run') as mock_sub, patch('builtins.print'):
@@ -687,19 +746,19 @@ class TestRunCMD(unittest.TestCase):
 
     def test_taskpolicy_prepends_clamp(self):
         """Verifies taskpolicy prepends taskpolicy -c <policy> to command arguments."""
-        with patch('subprocess.run') as mock_sub:
+        with patch('freshenmac.util.subprocess.run') as mock_sub:
             mock_sub.return_value.returncode = 0
             mock_sub.return_value.stdout = 'ok'
             mock_sub.return_value.stderr = ''
 
             # Valid QoS policies
             for clamp in ('utility', 'background', 'maintenance'):
-                cmd = RunCMD(['brew', 'upgrade'], taskpolicy=clamp)
+                cmd = RunCMD(['dummy', 'cmd'], taskpolicy=clamp)
                 self.assertEqual(cmd.cmd_args[:3], ['taskpolicy', '-c', clamp])
 
             # None or unsupported policy does not prepend
-            cmd_none = RunCMD(['brew', 'upgrade'], taskpolicy=None)
-            self.assertEqual(cmd_none.cmd_args, ['brew', 'upgrade'])
+            cmd_none = RunCMD(['dummy', 'cmd'], taskpolicy=None)
+            self.assertEqual(cmd_none.cmd_args, ['dummy', 'cmd'])
 
     def test_taskpolicy_real_execution(self):
         """Verifies real execution with taskpolicy='utility' succeeds."""
@@ -710,7 +769,7 @@ class TestRunCMD(unittest.TestCase):
 
     def test_timeout_handling(self):
         """Verifies TimeoutExpired sets returncode -80 and records timeout message."""
-        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd=['sleep', '5'], timeout=1)):
+        with patch('freshenmac.util.subprocess.run', side_effect=subprocess.TimeoutExpired(cmd=['sleep', '5'], timeout=1)):
             cmd = RunCMD(['sleep', '5'], timeout=1)
             self.assertFalse(bool(cmd))
             self.assertEqual(cmd.returncode, RETURNCODE['Timeout'])

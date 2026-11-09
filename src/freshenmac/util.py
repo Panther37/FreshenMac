@@ -23,7 +23,7 @@ from typing import Any, ClassVar, IO, Literal
 
 from freshenmac import config
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261109
 PATTERN: dict[str, re.Pattern[str]] = {
     'Word': re.compile(r"\w+"),
 }
@@ -215,6 +215,7 @@ class PrivilegedCMD:
         tty_timeout: int | float = 120,
         pipe_timeout: int | float = 15,
         *,
+        cwd: Path | None = None,
         name_running: str | None = None,
     ) -> bool:
         """Executes a command with root privileges, prompting interactively if in a TTY."""
@@ -226,7 +227,16 @@ class PrivilegedCMD:
                 "Prompting for sudo password...\n",
             )
         timeout = tty_timeout if is_tty else pipe_timeout
-        return bool(RunCMD(cmd_args, timeout, interactive=is_tty, need_root=True, **self.debug_vars))
+        return bool(
+            RunCMD(
+                cmd_args,
+                timeout,
+                cwd=cwd or Path('/'),
+                interactive=is_tty,
+                need_root=True,
+                **self.debug_vars,
+            ),
+        )
 
 
 class RunAppleScript:
@@ -345,7 +355,7 @@ class RunAppleScript:
                 f"ReturnCode: {self.returncode}\n"
                 f"Output: \n{self.stdout[:limit]}◊\n"
                 f"Error: \n{self.stderr[:limit] or str(self.error)[:limit] or 'None '}◊\n"
-                f"───────────── 🍎︎ ─────────────\n",
+                "───────────── 🍎︎ ─────────────\n",
             )
 
 
@@ -358,6 +368,7 @@ class RunCMD:
         timeout: int | float = 10,
         *,
         cancelable: bool | None = None,
+        cwd: Path | None = None,
         debug: int = 0,
         debug_limit: int = 0,
         environ: dict[str, str] | None = None,
@@ -372,6 +383,7 @@ class RunCMD:
     ) -> None:
         """
         :param cancelable: Allow command to be canceled by user (Control^C).
+        :param cwd: Current Working Directory; run command from this path
         :param debug: Verbosity/debug level (0=quiet, 1=verbose, 2+=command execution dumps)
         :param interactive: ``True:`` do not capture stdout/stderr to allow interactive TTY prompts
         :param spinner: ``True (or None and timeout >= 30):`` show a terminal spinner during execution
@@ -383,6 +395,7 @@ class RunCMD:
             cancelable = timeout >= config.TIMEOUT['All']['Minimum']
         self.cancelable = cancelable
         self.cmd_args = cmd_args
+        self.cwd = cwd
         self.debug = debug
         self.debug_limit = debug_limit
         self.environ = environ or {}
@@ -409,12 +422,11 @@ class RunCMD:
         if not self.permissions_checked:
             self._check_permission()
         if self.debug > 1:
-            limit = self.debug_limit
             print(
                 "\n─────────── RunCMD ───────────\n"
                 f"Command: {self.cmd_args}\n"
-                f"Output: \n{self.stdout[:limit]}◊\n"
-                f"Error: \n{self.stderr[:limit]}◊\n"
+                f"Output: \n{self.limiter(self.stdout)}◊\n"
+                f"Error: \n{self.limiter(self.stderr)}◊\n"
                 f'''{f" {self.shell_cmd or ''} ":─^30}\n''',
             )
 
@@ -476,13 +488,14 @@ class RunCMD:
         try:
             result = subprocess.run(
                 run_cmd_args,
+                capture_output=(not self.interactive),
+                cwd=str(self.cwd) if self.cwd else None,
+                env=popen_env,
+                executable=self.shell_cmd,
                 input=self.to_input,
                 shell=self.need_shell,
-                capture_output=(not self.interactive),
                 text=True,
                 timeout=self.timeout,
-                executable=self.shell_cmd,
-                env=popen_env,
             )
             self._get_output(result)
         except subprocess.TimeoutExpired as err_timeout:
@@ -527,6 +540,12 @@ class RunCMD:
     @property
     def error(self) -> str:
         return self.stderr.strip()
+
+    def limiter(self, some_text: str, ending: str = '…') -> str:
+        if self.debug_limit is None or len(some_text) <= self.debug_limit:
+            return some_text
+
+        return f"{some_text[:self.debug_limit - len(ending)]}{ending}"
 
     def parse_dict(self, delimiter: str = ':') -> dict[str, str]:
         """Make dictionary from stdout"""

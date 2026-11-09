@@ -1,0 +1,9 @@
+==> Downloading https://ghcr.io/v2/homebrew/core/meson/manifests/1.12.1-1
+==> Fetching downloads for: meson
+✔︎ Bottle meson (1.12.1)
+==> Reinstalling meson 
+==> Pouring meson--1.12.1.all.bottle.1.tar.gz
+🍺  /usr/local/Cellar/meson/1.12.1: 269 files, 4.4MB
+==> Caveats
+zsh completions have been installed to:
+  /usr/local/share/zsh/site-functions

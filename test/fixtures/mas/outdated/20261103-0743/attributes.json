@@ -1,0 +1,13 @@
+{
+  "cmd_args": [
+    "mas",
+    "outdated"
+  ],
+  "cmd_str": "mas outdated",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 1,
+  "stderr": "",
+  "stdout": "1447605203  CorelDRAW  (2024.0.230 -> 2026.2)\n"
+}

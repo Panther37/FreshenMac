@@ -1,0 +1,14 @@
+{
+  "cmd_args": [
+    "brew",
+    "upgrade",
+    "portable-ruby"
+  ],
+  "cmd_str": "brew upgrade portable-ruby",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 12,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}
