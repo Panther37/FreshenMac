@@ -1,0 +1,13 @@
+{
+  "cmd_args": [
+    "sw_vers",
+    "--productVersion"
+  ],
+  "cmd_str": "sw_vers --productVersion",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 0,
+  "stderr": "",
+  "stdout": "15.8.1\n"
+}

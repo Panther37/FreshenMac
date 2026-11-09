@@ -1,0 +1,14 @@
+{
+  "cmd_args": [
+    "brew",
+    "reinstall",
+    "meson"
+  ],
+  "cmd_str": "brew reinstall meson",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 4,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}

@@ -1,0 +1,22 @@
+==> Upgrading portable-ruby
+  4.0.7_1 -> 4.0.9 
+==> Pouring portable-ruby--4.0.9.big_sur.bottle.tar.gz
+🍺  /usr/local/Cellar/portable-ruby/4.0.9: 1,711 files, 34.4MB
+==> Cleanup
+Removing: /usr/local/Cellar/portable-ruby/4.0.7_1... (1,711 files, 34.3MB)
+Disable this behaviour by setting `HOMEBREW_NO_INSTALL_CLEANUP=1`.
+Hide these hints with `HOMEBREW_NO_ENV_HINTS=1` (see `man brew`).
+==> Caveats
+==> portable-ruby
+portable-ruby is keg-only, which means it was not symlinked into /usr/local,
+because portable formulae are keg-only.
+
+If you need to have portable-ruby first in your PATH, run:
+  printf '%s\n' export\ PATH\=/usr/local/opt/portable-ruby/bin:\$PATH >> ~/.zshrc
+
+For compilers to find portable-ruby you may need to set:
+  export LDFLAGS=-L/usr/local/opt/portable-ruby/lib
+  export CPPFLAGS=-I/usr/local/opt/portable-ruby/include
+
+For pkgconf to find portable-ruby you may need to set:
+  export PKG_CONFIG_PATH=/usr/local/opt/portable-ruby/lib/pkgconfig

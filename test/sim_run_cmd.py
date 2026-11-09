@@ -61,6 +61,7 @@ class SimRunCMD(RunCMD):
         *,
         cmd_args: list[str] | None = None,
         cmd_str: str = '',
+        cwd: Path | None = None,
         need_root: bool | None = None,
         need_shell: bool | None = None,
         run_time: int = 0,
@@ -75,6 +76,7 @@ class SimRunCMD(RunCMD):
 
         self.cmd_args: list[str] = cmd_args or []
         self.cmd_str: str = cmd_str
+        self.cwd: Path | None = Path(cwd) if cwd else None
 
         if need_root is None:
             need_root = bool(self.cmd_args and 'sudo' in self.cmd_args[0])
@@ -112,6 +114,7 @@ class SimRunCMD(RunCMD):
             returncode=data.get('returncode', 0),
             cmd_args=data.get('cmd_args'),
             cmd_str=data.get('cmd_str', ''),
+            cwd=data.get('cwd') or data.get('cmd_w_dir'),
             need_root=data.get('need_root'),
             need_shell=data.get('need_shell'),
             run_time=data.get('run_time', 0),
@@ -148,6 +151,7 @@ class SimRunCMD(RunCMD):
         cmd: str | list[str],
         base_dir: str | Path | None = None,
         *,
+        cwd: Path | None = None,
         timeout: int | float = DEFAULT_TIMEOUT,
     ) -> SimRunCMD:
         """
@@ -192,6 +196,7 @@ class SimRunCMD(RunCMD):
         start_time = time.monotonic()
         cmd_obj = RunCMD(
             cmd_args=run_cmd_args,
+            cwd=cwd,
             timeout=timeout,
             need_root=need_root,
             need_shell=need_shell,
@@ -205,6 +210,7 @@ class SimRunCMD(RunCMD):
             returncode=cmd_obj.returncode,
             cmd_args=tokens,
             cmd_str=cmd_str,
+            cwd=cwd,
             need_root=need_root,
             need_shell=need_shell,
             run_time=run_time,
@@ -241,6 +247,7 @@ class SimRunCMD(RunCMD):
         return {
             'cmd_args':   self.cmd_args,
             'cmd_str':    self.cmd_str,
+            'cwd':        str(self.cwd) if self.cwd else None,
             'need_root':  self.need_root,
             'need_shell': self.need_shell,
             'returncode': self.returncode,

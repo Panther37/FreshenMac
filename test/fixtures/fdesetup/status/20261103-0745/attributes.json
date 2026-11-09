@@ -1,0 +1,13 @@
+{
+  "cmd_args": [
+    "fdesetup",
+    "status"
+  ],
+  "cmd_str": "fdesetup status",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 0,
+  "stderr": "",
+  "stdout": "FileVault is On.\n"
+}

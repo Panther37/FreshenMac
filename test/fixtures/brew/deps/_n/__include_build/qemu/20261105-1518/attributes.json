@@ -1,0 +1,16 @@
+{
+  "cmd_args": [
+    "brew",
+    "deps",
+    "-n",
+    "--include-build",
+    "qemu"
+  ],
+  "cmd_str": "brew deps -n --include-build qemu",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 1,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}

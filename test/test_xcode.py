@@ -246,6 +246,26 @@ class TestXcode(unittest.TestCase):
                 self.assertTrue(xc.is_license_accepted)
                 self.assertTrue(xc.check_and_fix_license())
 
+    def test_is_license_error_false(self):
+        """Verifies clean compiler outputs or empty text do not trigger license error detection."""
+        xc = Xcode()
+        self.assertFalse(xc.is_license_error(''))
+        self.assertFalse(xc.is_license_error('Compilation succeeded without issues.'))
+        self.assertFalse(xc.is_license_error('Error: file not found: main.c'))
+
+    def test_is_license_error_true(self):
+        """Verifies CMake and toolchain unaccepted license messages are recognized."""
+        xc = Xcode()
+        cmake_err = (
+            "CMake Error at cmake/QtPublicAppleHelpers.cmake:909 (message):\n"
+            "  Can't determine darwin macosx SDK path. Error: You have not agreed to the\n"
+            "  Xcode license agreements. Please run 'sudo xcodebuild -license' from\n"
+            "  within a Terminal window to review and agree to the Xcode and Apple SDKs license."
+        )
+        self.assertTrue(xc.is_license_error(cmake_err))
+        self.assertTrue(xc.is_license_error("You must agree to the terms of the Xcode license."))
+        self.assertTrue(xc.is_license_error("Run 'sudo xcodebuild -license accept' to continue."))
+
     def test_not_installed(self):
         """Verifies is_installed returns False when neither bundle nor which find xcodebuild."""
         xc = Xcode()

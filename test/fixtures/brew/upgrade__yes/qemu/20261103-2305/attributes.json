@@ -1,0 +1,15 @@
+{
+  "cmd_args": [
+    "brew",
+    "upgrade",
+    "--yes",
+    "qemu"
+  ],
+  "cmd_str": "brew upgrade --yes qemu",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 1,
+  "stderr": "See stderr.txt",
+  "stdout": "See stdout.txt"
+}

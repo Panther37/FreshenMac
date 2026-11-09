@@ -9,6 +9,6 @@
   "need_shell": false,
   "returncode": 0,
   "run_time": 4,
-  "stderr": "See stderr.txt",
+  "stderr": "",
   "stdout": "See stdout.txt"
 }

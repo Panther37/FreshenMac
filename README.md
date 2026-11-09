@@ -5,7 +5,7 @@ A friendly tool that automatically keeps macOS, Homebrew, and App Store apps upd
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.15-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-329%20passed-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-368%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
@@ -85,7 +85,8 @@ brew upgrade --cask freshenmac
       ```bash
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       ```
-    - When tapping third-party repositories, Homebrew may ask to confirm trust (`[y/N]`). Type `y` to confirm, or grant trust manually using `brew trust panther37/tap`.
+    - When tapping third-party repositories, Homebrew may ask to confirm trust (`[y/N]`). Type `y` to confirm, or grant trust manually using
+      `brew trust panther37/tap`.
 - **App Store CLI:** (optional) [`mas`](https://github.com/mas-cli/mas)
     - If Homebrew is on your Mac, FreshenMac installs `mas` for you automatically.
 
@@ -105,30 +106,29 @@ python3 src/FreshenMac.py
 
 ## Command Options
 
-| Flag                      | Short    | Description                                                                                                                                                        |
+| Flag                    | Short    | Description                                                                                                                                                        |
 |:------------------------|:---------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--verbose`               | `-v`     | Show more detail (`-v`, `-vv`, etc.). Also limits output to 10,000 characters unless you set `--debug-limit`.                                                      |
-| `--debug-limit <N>`       | `-l <N>` | Set a custom character limit for logs (use a negative number for unlimited).                                                                                       |
-| `--trace`                 |          | Maximum detail with no character limit. Same as `--debug-limit=-1 -vvvv`.                                                                                          |
-| `--reboot <OPTION>`       | `-r`     | Reboot mode: `force`, `yes`, `skip`, `no`, or `default` (case-insensitive). Overrides reboot requirements.                                                         |
-| `--action <VERB>`         | `-a`     | Run management action (`Install` or `Uninstall`; case-insensitive).                                                                                                |
+| `--verbose`             | `-v`     | Show more detail (`-v`, `-vv`, etc.). Also limits output to 10,000 characters unless you set `--debug-limit`.                                                      |
+| `--debug-limit <N>`     | `-l <N>` | Set a custom character limit for logs (use a negative number for unlimited).                                                                                       |
+| `--trace`               |          | Maximum detail with no character limit. Same as `--debug-limit=-1 -vvvv`.                                                                                          |
+| `--reboot <OPTION>`     | `-r`     | Reboot mode: `force`, `yes`, `skip`, `no`, or `default` (case-insensitive). Overrides reboot requirements.                                                         |
+| `--action <VERB>`       | `-a`     | Run management action (`Install` or `Uninstall`; case-insensitive).                                                                                                |
 | `--ignore-mas <APP...>` | `-i`     | Skip App Store apps by name or ID number (for example: `-i iPhoto 408981381`). This is not persistent. See `--save-pref`.                                          |
-| `--schedule [CRON]`       | `--cron` | Set or update the LaunchAgent schedule using cron syntax (e.g. `--schedule "0 18 * * 1"` or `--schedule default`). Run without arguments to view schedule options. |
+| `--schedule [CRON]`     | `--cron` | Set or update the LaunchAgent schedule using cron syntax (e.g. `--schedule "0 18 * * 1"` or `--schedule default`). Run without arguments to view schedule options. |
 | `--save-pref [PREF]`    | `-s`     | Save a setting permanently to your preferences file (`Key=Value`). Run `-s` alone to view all settings and help.                                                   |
-| `--standalone`            | `-z`     | Run once without installing anything or setting up a schedule.                                                                      |
-| `--dry-run`               |          | Simulate execution without modifying system files or running privileged updates.                                                                                   |
-| `--spinner`               |          | Test the terminal wave spinner animation.                                                                                                                          |
-| `--version`               |          | Show the program name and version number and exit.                                                                                                                 |
+| `--standalone`          | `-z`     | Run once without installing anything or setting up a schedule.                                                                                                     |
+| `--dry-run`             |          | Simulate execution without modifying system files or running privileged updates.                                                                                   |
+| `--version`             |          | Show the program name and version number and exit.                                                                                                                 |
 
 ### Preference Options (`--save-pref`)
 
 These settings can be saved permanently using `--save-pref Key=Value`:
 
-| Preference Key    | Value / Format | Description                                                                                                                   |
-|:------------------|:---------------|:------------------------------------------------------------------------------------------------------------------------------|
-| `download-speed`  | `<MBPS>`       | Minimum download speed in Mbps (default: 5.0) used for dynamic App Store timeouts (includes a 25% safety buffer).              |
-| `no-mas`          | `<APP...>`     | Space-separated list of App Store app names or IDs to permanently skip (e.g. `no-mas="iPhoto 408981381"`).                   |
-| `schedule`        | `<CRON>`       | LaunchAgent schedule in standard 5-field cron syntax (e.g. `schedule="0 6 * * 1"`). Also configurable via `--schedule`.       |
+| Preference Key   | Value / Format | Description                                                                                                             |
+|:-----------------|:---------------|:------------------------------------------------------------------------------------------------------------------------|
+| `download-speed` | `<MBPS>`       | Minimum download speed in Mbps (default: 5.0) used for dynamic App Store timeouts (includes a 25% safety buffer).       |
+| `no-mas`         | `<APP...>`     | Space-separated list of App Store app names or IDs to permanently skip (e.g. `no-mas="iPhoto 408981381"`).              |
+| `schedule`       | `<CRON>`       | LaunchAgent schedule in standard 5-field cron syntax (e.g. `schedule="0 6 * * 1"`). Also configurable via `--schedule`. |
 
 ---
 
@@ -155,9 +155,12 @@ freshenmac --schedule
 
 This configures a system-wide background service and unattended maintenance configuration:
 
-- **Command-Line Tool:** Installs the `freshenmac` command directly into your Homebrew path (`/opt/homebrew/bin/freshenmac` on Apple Silicon or `/usr/local/bin/freshenmac` on Intel).
-- **Background Maintenance Service (`LaunchAgent`):** Automatically installs and activates `/Library/LaunchAgents/com.panther37.FreshenMac.plist` to run unattended maintenance every Sunday at 2:00 AM (or on your custom schedule).
-- **Unattended Sudo Privileges:** Sets up `/etc/sudoers.d/freshenmac` so scheduled background runs can perform system and software updates without prompting for passwords.
+- **Command-Line Tool:** Installs the `freshenmac` command directly into your Homebrew path (`/opt/homebrew/bin/freshenmac` on Apple Silicon or
+  `/usr/local/bin/freshenmac` on Intel).
+- **Background Maintenance Service (`LaunchAgent`):** Automatically installs and activates `/Library/LaunchAgents/com.panther37.FreshenMac.plist` to
+  run unattended maintenance every Sunday at 2:00 AM (or on your custom schedule).
+- **Unattended Sudo Privileges:** Sets up `/etc/sudoers.d/freshenmac` so scheduled background runs can perform system and software updates without
+  prompting for passwords.
 
 To install or remove the scheduled service:
 
@@ -277,15 +280,14 @@ flowchart TD
     - `CronSchedule`: Encapsulates calendar intervals and parses 5-part cron syntax or launchd dictionaries into Cartesian intervals.
 - `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
 - `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`), executes AppleScript (`RunAppleScript`), detects
-  active applications (`is_app_running`), handles safe string joining (`str_join`), parses natural version numbers
-  (`Version`), manages masked user authentication credentials (`TortimerCreds`), keeps administrator permissions active
-  (`SudoKeepAlive`), and draws the progress spinner (`Wave`).
+  active applications (`is_app_running`), handles safe string joining (`str_join`), parses natural version numbers (`Version`), manages masked user
+  authentication credentials (`TortimerCreds`), keeps administrator permissions active (`SudoKeepAlive`), and draws the progress spinner (`Wave`).
 
 ---
 
 ## Running Tests
 
-FreshenMac has 329 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
+FreshenMac has 368 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
 These tests verify that everything works correctly and that code follows strict project rules (like keeping classes,
 methods, constants, and imports in alphabetical order):
 

@@ -1,0 +1,14 @@
+{
+  "cmd_args": [
+    "mas",
+    "info",
+    "1447605203"
+  ],
+  "cmd_str": "mas info 1447605203",
+  "need_root": false,
+  "need_shell": false,
+  "returncode": 0,
+  "run_time": 0,
+  "stderr": "",
+  "stdout": "See stdout.txt"
+}

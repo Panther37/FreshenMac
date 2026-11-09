@@ -68,6 +68,20 @@ class TestHomeBrew(unittest.TestCase):
             {'cancelable': True, 'debug': 1, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
         )
 
+    def test_fix_lazy_initialization(self):
+        """Verifies self._fix initializes as None and fixer creates RecoveryEngine only once on demand."""
+        brew = HomeBrew(is_arm=True, dry_run=True)
+        self.assertIsNone(brew._fix)
+
+        # Triggers lazy creation on first access to property fixer
+        fix_engine = brew.fixer
+        self.assertIsNotNone(fix_engine)
+        self.assertIs(brew._fix, fix_engine)
+        self.assertTrue(len(fix_engine.rules) > 0)
+
+        # Subsequent call returns the exact same instance without re-instantiating
+        self.assertIs(brew.fixer, fix_engine)
+
     def test_get_and_upgrade_casks(self):
         """Verifies _get_outdated_casks parses cask JSON and _upgrade_casks upgrades each cask."""
         # Arrange
@@ -153,6 +167,11 @@ class TestHomeBrew(unittest.TestCase):
 
             # Assert: filters only packages needing cmake
             self.assertEqual(res, ['cmake_pkg', 'dep_cmake'])
+
+    def test_get_log_path(self):
+        """Verifies _get_log_path returns empty Path for empty or non-existent package logs."""
+        self.assertEqual(HomeBrew._get_log_path(''), Path())
+        self.assertEqual(HomeBrew._get_log_path('nonexistent_package_12345'), Path())
 
     def test_get_outdated_formulae(self):
         """Verifies _get_outdated parses brew outdated JSON and excludes pinned packages."""
@@ -320,7 +339,7 @@ class TestHomeBrew(unittest.TestCase):
             Path, 'exists', autospec=True, side_effect=lambda p: p == lock_dir,
         ):
             # Act
-            res = brew._recover_rebase()
+            res = brew.recover_rebase()
 
             # Assert: aborted rebase and reset repository
             self.assertTrue(res)
@@ -619,6 +638,60 @@ class TestHomeBrew(unittest.TestCase):
             # Assert
             mock_cmd.assert_not_called()
 
+    def test_update_brew_retries_on_python_mismatch_error(self):
+        """Verifies update detects Python build dependency mismatch, reinstalls dependency, and retries."""
+        # Arrange
+        brew = HomeBrew(is_arm=False, dry_run=False)
+        upgrade_attempts = []
+        reinstall_calls = []
+
+        def fake_runcmd(cmd, *args, **kwargs):
+            cmd_list = list(cmd)
+            mock = MagicMock()
+            mock.__contains__.side_effect = lambda item: item in mock.stdout
+            mock.returncode = 0
+            mock.stdout = ''
+            mock.stderr = ''
+            if 'outdated' in cmd_list:
+                mock.stdout = json.dumps({'formulae': [{'name': 'qemu', 'pinned': False}]})
+            elif 'deps' in cmd_list and '--for-each' in cmd_list:
+                mock.stdout = ''
+                mock.parse_dict.return_value = {}
+            elif 'deps' in cmd_list and '-n' in cmd_list:
+                mock.stdout = 'meson\n'
+            elif 'reinstall' in cmd_list:
+                reinstall_calls.append(cmd_list)
+                mock.returncode = 0
+                mock.__bool__.return_value = True
+                mock.stdout = '==> Reinstalling meson'
+            elif all(['upgrade' in cmd_list, 'qemu' in cmd_list]):
+                upgrade_attempts.append(cmd_list)
+                if len(upgrade_attempts) == 1:
+                    mock.returncode = 1
+                    mock.__bool__.return_value = False
+                    mock.stderr = (
+                        "mkvenv: checking for meson>=1.5.0\n"
+                        "ERROR: Could not find a version that satisfies the requirement meson==1.11.1\n"
+                        "Could not provide build dependency 'meson==1.11.1':\n"
+                        " • Python package 'meson' was not found nor installed."
+                    )
+                else:
+                    mock.returncode = 0
+                    mock.__bool__.return_value = True
+                    mock.stdout = '==> Upgrading qemu'
+            mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
+            return mock
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd):
+            # Act
+            brew.update()
+
+            # Assert
+            self.assertEqual(len(reinstall_calls), 1)
+            self.assertIn('meson', reinstall_calls[0])
+            self.assertEqual(len(upgrade_attempts), 2)
+            self.assertTrue(brew.updates_performed)
+
     def test_update_brew_retries_on_xcode_license_error(self):
         """Verifies update detects Xcode license error, triggers license acceptance, and retries."""
         # Arrange
@@ -754,7 +827,7 @@ class TestHomeBrew(unittest.TestCase):
         with patch(
             'freshenmac.homebrew.RunCMD', side_effect=fake_runcmd,
         ), patch.object(
-            brew, '_recover_rebase', return_value=True,
+            brew, 'recover_rebase', return_value=True,
         ) as mock_recover, patch.object(
             brew, '_get_outdated', return_value={'casks': {}, 'formulae': {}},
         ):

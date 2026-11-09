@@ -1,0 +1,14 @@
+{
+  "cmd_args": [
+    "softwareupdate",
+    "--list"
+  ],
+  "cmd_str": "softwareupdate --list",
+  "need_root": false,
+  "need_shell": false,
+  "notes": "15.8.1 installed, 15.8.2 should be downloaded and staged",
+  "returncode": 0,
+  "run_time": 12,
+  "stderr": "",
+  "stdout": "See stdout.txt"
+}

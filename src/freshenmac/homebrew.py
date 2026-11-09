@@ -8,13 +8,13 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from freshenmac import plist
+from freshenmac import fix, plist
 from freshenmac.boot import RebootState
 from freshenmac.config import DEFAULTS, TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261109
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Content Length': re.compile(r"content-length:\s*(?P<length>\d+)", re.IGNORECASE),
@@ -30,10 +30,6 @@ PATTERN: dict[str, re.Pattern[str]] = {
         r"(?:system|computer|macOS)\s+(?:reboot|restart)|"
         r"(?:reboot|restart)\s+your\s+(?:mac|system|computer)|"
         r"restart\s+is\s+required",
-        re.IGNORECASE,
-    ),
-    'Xcode':          re.compile(
-        r"xcodebuild\s+-license|Xcode license agreements|agreed to the.*Xcode",
         re.IGNORECASE,
     ),
 }
@@ -72,6 +68,7 @@ class HomeBrew:
         self.timeout = timeout
         self.updates_performed = False
         self.xcode = Xcode(debug_vars=self.debug_vars, dry_run=dry_run, logger=self.logger)
+        self._fix: fix.RecoveryEngine | None = None
         self._configure_environment()
 
     @staticmethod
@@ -85,6 +82,15 @@ class HomeBrew:
         os.environ['HOMEBREW_NO_ASK'] = '1'
         os.environ['HOMEBREW_NO_ENV_HINTS'] = '1'
 
+    def _failure_context(self, cmd: RunCMD, package: str) -> fix.FailureInfo:
+        """Constructs a FailureInfo from a failed RunCMD command and target package."""
+        return fix.FailureInfo.from_runcmd(
+            cmd,
+            log_file=self._get_log_path(package),
+            package=package,
+            subsystem='Homebrew',
+        )
+
     def _get_cmake_formulae(self, formula_names: list[str] | dict[str, str]) -> list[str]:
         """Identifies which outdated formulae require cmake to build."""
         names = list(formula_names.keys()) if isinstance(formula_names, dict) else list(formula_names)
@@ -95,9 +101,8 @@ class HomeBrew:
         debug_args = dict(self.debug_vars)
         if debug_args.get('debug', 0) > 1 and debug_args.get('debug_limit', 0) < 0:
             debug_args['debug'] = 1
-        deps_cmd = RunCMD(a_cmd, timeout=min(self.timeout, 120), **debug_args)
         cmake_list: list[str] = []
-        if deps_cmd:
+        if deps_cmd := RunCMD(a_cmd, timeout=min(self.timeout, 120), **debug_args):
             deps_dict = deps_cmd.parse_dict()
             cmake_list = [pkg for pkg, deps in deps_dict.items() if pkg in names and 'cmake' in deps.split()]
 
@@ -107,6 +112,19 @@ class HomeBrew:
         if self.debug_vars['debug'] > 1:
             self.logger.printf(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
         return cmake_list
+
+    @staticmethod
+    def _get_log_path(package: str) -> Path:
+        """Discovers the most recent Homebrew build log path for the specified package."""
+        if not package:
+            return Path()
+
+        log_dir = Path.home() / 'Library' / 'Logs' / 'Homebrew' / package
+        if not log_dir.is_dir():
+            return Path()
+
+        # .        `ls ${log_dir}/*.log`, key=(Use time modified as the value)
+        return max(log_dir.glob('*.log'), key=lambda p: p.stat().st_mtime, default=Path())
 
     def _get_outdated(
         self,
@@ -144,6 +162,19 @@ class HomeBrew:
                 outdated[bottle_type][name] = value
 
         return outdated
+
+    def _make_brew_cmd(self, bottle: str, action: str = 'upgrade', cask: bool = False, timeout: int = 0) -> RunCMD:
+        a_cmd = [str(self.brew_path), action, '--yes']
+        if cask:
+            a_cmd.append('--cask')
+        a_cmd.append(bottle)
+        if not timeout:
+            timeout = self.timeout
+        cmd = RunCMD(a_cmd, **self.cmd_options({'timeout': timeout}))
+        if not cmd:
+            context = self._failure_context(cmd, bottle)
+            cmd = self.fixer.recover(context, lambda: RunCMD(a_cmd, **self.cmd_options({'timeout': timeout}))) or cmd
+        return cmd
 
     def _parse_outdated(self, json_data: str | dict[str, Any]) -> list[dict[str, str]]:
         """Parses brew outdated JSON data into mappings of outdated formulae and casks."""
@@ -188,55 +219,6 @@ class HomeBrew:
             else:
                 self.logger.store(message, 'Homebrew')
             return {'casks': [], 'formulae': []}
-
-    def _recover_rebase(self) -> bool:
-        """
-        Recovers Homebrew and all taps from interrupted/stranded git rebases and conflicts.
-        """
-        try:
-            repo_cmd = RunCMD([str(self.brew_path), '--repository'], **self.debug_vars)
-            if repo_cmd and repo_cmd.stdout.strip():
-                repo_path = Path(repo_cmd.stdout.strip())
-            else:
-                repo_path = Path('/usr/local/Homebrew')
-        except Exception as err_clean:
-            self.log(str(err_clean))
-            return False
-
-        recovered = False
-        repos_to_check = [repo_path]
-        taps_dir = repo_path / 'Library' / 'Taps'
-        if taps_dir.is_dir():
-            for tap in taps_dir.glob('*/*'):
-                if tap.is_dir() and (tap / '.git').is_dir():
-                    repos_to_check.append(tap)
-        for repo in repos_to_check:
-            is_dirty = False
-            lock_dir = repo / '.git' / 'rebase-merge'
-            apply_dir = repo / '.git' / 'rebase-apply'
-            if lock_dir.exists() or apply_dir.exists():
-                is_dirty = True
-                self.log(f"[Self-Healing] Found stranded rebase lock in {repo}.  Aborting rebase...")
-                RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
-                shutil.rmtree(lock_dir, ignore_errors=True)
-                shutil.rmtree(apply_dir, ignore_errors=True)
-
-            status_cmd = RunCMD(['git', '-C', str(repo), 'status', '--porcelain'], **self.debug_vars)
-            if status_cmd and ('UU ' in status_cmd.stdout or 'both modified' in status_cmd.stdout or is_dirty):
-                self.log(f"[Self-Healing] Cleaning conflicted/dirty tap repository {repo.name}...")
-                RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'checkout', '-f', '.'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'clean', '-fd'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'reset', '--hard', 'origin/HEAD'], **self.debug_vars)
-                is_dirty = True
-
-            if is_dirty:
-                recovered = True
-                self.log(f"[Self-Healing] Rebase recovery in {repo.name} succeeded.")
-        if recovered:
-            RunCMD([str(self.brew_path), 'update-reset'], **self.cmd_options())
-
-        return recovered
 
     def _resolve_and_update_dependencies(self, a_formula: str, outdated_formulae: dict[str, str] | None = None) -> bool:
         """
@@ -287,10 +269,7 @@ class HomeBrew:
         success = True
         for dep, ver_str in to_update:
             self.log(f"════ Upgrading outdated dependency {dep} ({ver_str}) (for {a_formula}) ════")
-            cmd = RunCMD(
-                [str(self.brew_path), 'upgrade', '--yes', dep],
-                **self.cmd_options({'timeout': self.timeout}),
-            )
+            cmd = self._make_brew_cmd(dep)
             if cmd:
                 if '==> Installing' in cmd or '==> Upgrading' in cmd:
                     self.updates_performed = True
@@ -305,20 +284,7 @@ class HomeBrew:
 
         for dep in to_install:
             self.log(f"════ Installing missing dependency {dep} (for {a_formula}) ════")
-            cmd = RunCMD(
-                [str(self.brew_path), 'install', '--yes', dep],
-                **self.cmd_options({'timeout': self.timeout}),
-            )
-            if not cmd:
-                output = cmd.std_all
-                if PATTERN['Xcode'].search(output):
-                    self._warning('install', dep)
-                    if self.xcode.check_and_fix_license():
-                        self.log(f"Retrying 'brew install {dep}' after accepting Xcode license...")
-                        cmd = RunCMD(
-                            [str(self.brew_path), 'install', '--yes', dep],
-                            **self.cmd_options({'timeout': self.timeout}),
-                        )
+            cmd = self._make_brew_cmd(dep, 'install')
             if cmd:
                 if '==> Installing' in cmd or '==> Upgrading' in cmd:
                     self.updates_performed = True
@@ -361,9 +327,7 @@ class HomeBrew:
             self.log(f"════ Upgrading cask {ver_str} ════")
             self.attempted_updates.add(c_name)
             try:
-                timeout = self.calculate_cask_timeout(c_name)
-                a_cmd = [str(self.brew_path), 'upgrade', '--cask', '--yes', c_name]
-                cask_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': timeout}))
+                cask_upgrade = self._make_brew_cmd(c_name, cask=True, timeout=self.calculate_cask_timeout(c_name))
                 if not cask_upgrade:
                     self._warning('upgrade --cask', ver_str, cask_upgrade.returncode, cask_upgrade.stderr)
                 elif cask_upgrade:
@@ -409,15 +373,7 @@ class HomeBrew:
                     continue
 
                 self.log(f"════ Upgrading {value} (requires cmake) ════")
-                a_cmd = [str(self.brew_path), 'upgrade', '--yes', key]
-                brew_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': self.cmake_timeout}))
-                if not brew_upgrade:
-                    output = brew_upgrade.std_all
-                    if PATTERN['Xcode'].search(output):
-                        self._warning('upgrade', value)
-                        if self.xcode.check_and_fix_license():
-                            self.log(f"Retrying 'brew upgrade {value}' after accepting Xcode license...")
-                            brew_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': self.cmake_timeout}))
+                brew_upgrade = self._make_brew_cmd(key, timeout=self.cmake_timeout)
                 if not brew_upgrade:
                     self._warning('upgrade', value, brew_upgrade.returncode, brew_upgrade.stderr)
                 elif brew_upgrade:
@@ -452,15 +408,7 @@ class HomeBrew:
 
             formatted_ver = f"{formula} ({ver_str})" if ver_str else formula
             self.log(f"════ Upgrading {formatted_ver} ════")
-            a_cmd = [str(self.brew_path), 'upgrade', '--yes', formula]
-            brew_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': self.timeout}))
-            if not brew_upgrade:
-                output = brew_upgrade.std_all
-                if PATTERN['Xcode'].search(output):
-                    self._warning('upgrade', formatted_ver)
-                    if self.xcode.check_and_fix_license():
-                        self.log(f"Retrying 'brew upgrade {formatted_ver}' after accepting Xcode license...")
-                        brew_upgrade = RunCMD(a_cmd, **self.cmd_options({'timeout': self.timeout}))
+            brew_upgrade = self._make_brew_cmd(formula)
             if not brew_upgrade:
                 self._warning('upgrade', formatted_ver, brew_upgrade.returncode, brew_upgrade.stderr)
                 return False
@@ -565,8 +513,21 @@ class HomeBrew:
             options.update(update_options)
         return options
 
+    @property
+    def fixer(self) -> fix.RecoveryEngine:
+        """Lazily initializes the self-healing recovery engine and registers diagnostic rules."""
+        if self._fix is None:
+            self._fix = fix.RecoveryEngine(
+                debug_vars=self.debug_vars,
+                dry_run=self.dry_run,
+                logger=self.logger,
+                target=self,
+            )
+        assert self._fix is not None
+        return self._fix
+
     def get_cask_size_mb(self, cask_token: str) -> float:
-        """Retrieves download size in megabytes for a cask via brew info URL HEAD request. Returns 0.0 if unavailable."""
+        """Retrieves download size in MB for a cask via brew info URL HEAD request.  Returns 0.0 if unavailable."""
         cmd = RunCMD([str(self.brew_path), 'info', '--json=v2', '--cask', cask_token], timeout=30)
         if not cmd:
             return 0.0
@@ -597,6 +558,68 @@ class HomeBrew:
     def log(self, message: str) -> None:
         """Logs message to console and persistent log file."""
         self.logger.print_store(message, component='Homebrew')
+
+    def recover_rebase(self) -> bool:
+        """
+        Recovers Homebrew and all taps from interrupted/stranded git rebases and conflicts.
+        """
+        try:
+            repo_cmd = RunCMD([str(self.brew_path), '--repository'], **self.debug_vars)
+            if repo_cmd and repo_cmd.stdout.strip():
+                repo_path = Path(repo_cmd.stdout.strip())
+            else:
+                repo_path = Path('/usr/local/Homebrew')
+        except Exception as err_clean:
+            self.log(str(err_clean))
+            return False
+
+        recovered = False
+        repos_to_check = [repo_path]
+        taps_dir = repo_path / 'Library' / 'Taps'
+        if taps_dir.is_dir():
+            for tap in taps_dir.glob('*/*'):
+                if tap.is_dir() and (tap / '.git').is_dir():
+                    repos_to_check.append(tap)
+
+        for repo in repos_to_check:
+            is_dirty = False
+            lock_dir = repo / '.git' / 'rebase-merge'
+            apply_dir = repo / '.git' / 'rebase-apply'
+            if lock_dir.exists() or apply_dir.exists():
+                is_dirty = True
+                self.log(f"[Self-Healing] Found stranded rebase lock in {repo}.  Aborting rebase...")
+                RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                shutil.rmtree(apply_dir, ignore_errors=True)
+            status_cmd = RunCMD(['git', '-C', str(repo), 'status', '--porcelain'], **self.debug_vars)
+            if status_cmd and ('UU ' in status_cmd.stdout or 'both modified' in status_cmd.stdout or is_dirty):
+                self.log(f"[Self-Healing] Cleaning conflicted/dirty tap repository {repo.name}...")
+                RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
+                RunCMD(['git', '-C', str(repo), 'checkout', '-f', '.'], **self.debug_vars)
+                RunCMD(['git', '-C', str(repo), 'clean', '-fd'], **self.debug_vars)
+                RunCMD(['git', '-C', str(repo), 'reset', '--hard', 'origin/HEAD'], **self.debug_vars)
+                is_dirty = True
+            if is_dirty:
+                recovered = True
+                self.log(f"[Self-Healing] Rebase recovery in {repo.name} succeeded.")
+
+        if recovered:
+            RunCMD([str(self.brew_path), 'update-reset'], **self.cmd_options())
+        return recovered
+
+    def reinstall_dependency(self, needs: str) -> bool:
+        """Reinstalls a formula to heal broken Python module links or build environments."""
+        if not needs:
+            return False
+
+        self.log(f"════ Reinstalling build dependency '{needs}' to repair environment ════")
+        cmd = self._make_brew_cmd(needs, 'reinstall')
+        if cmd:
+            self.logger.store(f"Successfully reinstalled dependency '{needs}'", 'Homebrew')
+            return True
+
+        self._warning('reinstall', needs, cmd.returncode, cmd.stderr)
+        return False
 
     def self_update_freshenmac(self, ver_str: str | None = None) -> bool:
         """
@@ -675,23 +698,26 @@ class HomeBrew:
             self.log(
                 "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap.  Self-healing...",
             )
-            if self._recover_rebase():
+            if self.recover_rebase():
                 self.log("Retrying Homebrew update after clearing stranded rebase...")
                 RunCMD(u_cmd, **self.cmd_options())
             else:
                 self.log("[Warning] Rebase self-healing did not find any stranded locks.")
 
-        # 2. Check for outdated formulae and casks
+        # 2. Check for outdated formulae and casks, find CMake updates, Update FreshenMac
         outdated = self._get_outdated()
         if 'freshenmac' in outdated.get('casks', {}):
             self.self_update_freshenmac(outdated['casks'].pop('freshenmac'))
 
-        cmake_formulae = self._get_cmake_formulae(outdated['formulae']) if outdated['formulae'] else []
+        # 3. Find and perform CMake updates
+        cmake_formulae = self._get_cmake_formulae(outdated.get('formulae', {}))
         # # TODO: Only update Major and Minor versions of formulae that use cmake (unless something needs the Micro)
         if cmake_formulae:
             self._upgrade_cmake_formulae(cmake_formulae, outdated['formulae'])
 
         remaining_formulae = {k: v for k, v in outdated['formulae'].items() if k not in cmake_formulae}
+
+        # 3. Perform updates
         if remaining_formulae:
             self.log(
                 f"Found {len(remaining_formulae)} remaining formula{'e' if len(remaining_formulae) != 1 else ''} "
