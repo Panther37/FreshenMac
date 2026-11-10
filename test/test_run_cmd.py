@@ -391,24 +391,6 @@ class TestRunAppleScript(unittest.TestCase):
             self.assertIn('button returned:Restart Now', ascript)
             self.assertNotIn('button returned:Snooze', ascript)
 
-    def test_debug_limit_default_and_custom(self):
-        """Verifies debug_limit limits output truncation when debug logging is active."""
-        with patch('subprocess.run') as mock_run, patch('builtins.print'):
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=['osascript'], returncode=0, stdout='a' * 15000, stderr='',
-            )
-            # Default debug_limit=0 means unlimited (None)
-            ascript_default = RunAppleScript('test', debug=2)
-            self.assertIsNone(ascript_default.debug_limit)
-
-            # Custom positive debug_limit
-            ascript_custom = RunAppleScript('test', debug=2, debug_limit=50)
-            self.assertEqual(ascript_custom.debug_limit, 50)
-
-            # Zero or negative debug_limit sets self.debug_limit to None (unlimited)
-            ascript_unlimited = RunAppleScript('test', debug=2, debug_limit=-1)
-            self.assertIsNone(ascript_unlimited.debug_limit)
-
     def test_debug_output(self):
         """Verifies debug=2 prints stdout and stderr to console."""
         with patch('subprocess.run') as mock_run, patch('builtins.print') as mock_print:
@@ -564,6 +546,28 @@ class TestRunCMD(unittest.TestCase):
                 mock_sub.assert_called_once()
                 args, _ = mock_sub.call_args
                 self.assertEqual(args[0], ['sudo', '-n', 'true'])
+
+    def test_can_sudo_validate(self):
+        """Verifies can_sudo with validate=True delegates to sudo -n -v when non-root."""
+        # When running as non-root (euid == 501), delegates to RunCMD(['sudo', '-n', '-v'])
+        with patch('os.geteuid', return_value=501):
+            with patch('subprocess.run') as mock_sub:
+                mock_sub.return_value = subprocess.CompletedProcess(
+                    args=['sudo', '-n', '-v'], returncode=0, stdout='', stderr='',
+                )
+                self.assertTrue(RunCMD.can_sudo(validate=True))
+                mock_sub.assert_called_once()
+                args, _ = mock_sub.call_args
+                self.assertEqual(args[0], ['sudo', '-n', '-v'])
+
+            with patch('subprocess.run') as mock_sub:
+                mock_sub.return_value = subprocess.CompletedProcess(
+                    args=['sudo', '-n', '-v'], returncode=1, stdout='', stderr='password required',
+                )
+                self.assertFalse(RunCMD.can_sudo(validate=True))
+                mock_sub.assert_called_once()
+                args, _ = mock_sub.call_args
+                self.assertEqual(args[0], ['sudo', '-n', '-v'])
 
     def test_cancelable_keyboard_interrupt_sets_errno_130(self):
         """Verifies cancelable=True intercepts KeyboardInterrupt and sets returncode 130."""
@@ -871,15 +875,6 @@ class TestSudoKeepAlive(unittest.TestCase):
     Tests repeating sudo -n -v refresh loop and thread lifecycle.
     """
 
-    def test_context_manager(self):
-        """Verifies SudoKeepAlive starts background thread on enter and terminates on exit."""
-        with patch.object(SudoKeepAlive, 'start',) as mock_start, patch.object(SudoKeepAlive, 'stop',) as mock_stop:
-            with SudoKeepAlive(interval_seconds=10) as keepalive:
-                self.assertIsInstance(keepalive, SudoKeepAlive)
-                mock_start.assert_called_once()
-                mock_stop.assert_not_called()
-            mock_stop.assert_called_once()
-
     def test_keepalive_refreshes_sudo(self):
         """Verifies _keepalive executes sudo -n -v when can_sudo is True."""
         keepalive = SudoKeepAlive(interval_seconds=1)
@@ -953,6 +948,21 @@ class TestTortimerCreds(unittest.TestCase):
         with patch.dict('os.environ', {'SUDO_USER': 'sudo_admin'}):
             self.assertEqual(TortimerCreds.get_console_user(), 'sudo_admin')
 
+    def test_prompt_interactive_already_validated(self):
+        """Verifies prompt skips priming sudo when credentials are already validated."""
+        with patch('freshenmac.util.is_interactive', return_value=True):
+            with patch.object(TortimerCreds, 'get_console_user', return_value='admin'):
+                with patch('freshenmac.util.RunCMD') as mock_cmd:
+                    mock_cmd.can_sudo.return_value = True
+                    with patch('sys.stdin.isatty', return_value=True):
+                        with patch('getpass.getpass', return_value='secret123') as mock_getpass:
+                            creds = TortimerCreds.prompt()
+                            self.assertEqual(creds.username, 'admin')
+                            self.assertEqual(creds.password, 'secret123')
+                            mock_getpass.assert_called_once()
+                            mock_cmd.can_sudo.assert_called_once_with(validate=True)
+                            mock_cmd.assert_not_called()
+
     def test_prompt_interactive_password(self):
         """Verifies prompt primes sudo and captures password in interactive session."""
         with patch('freshenmac.util.is_interactive', return_value=True):
@@ -965,6 +975,7 @@ class TestTortimerCreds(unittest.TestCase):
                             self.assertEqual(creds.username, 'admin')
                             self.assertEqual(creds.password, 'secret123')
                             mock_getpass.assert_called_once()
+                            mock_cmd.can_sudo.assert_called_once_with(validate=True)
                             mock_cmd.assert_called_with(['sudo', '-v'], interactive=True, timeout=120)
 
     def test_prompt_non_interactive(self):

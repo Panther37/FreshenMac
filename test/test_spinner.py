@@ -48,15 +48,6 @@ class TestSpinner(unittest.TestCase):
                 self.assertIsNotNone(sp)
             mock_sp_cls.assert_called_once_with('echo spinner test', direction='right', persist=True)
 
-    def test_run_cmd_spinner_context_disabled(self):
-        """Verifies spinner remains disabled when explicitly set to False with timeout=0."""
-        cmd = RunCMD.__new__(RunCMD)
-        cmd.interactive = False
-        cmd.spinner = False
-        cmd.timeout = 0
-        with cmd._spinner() as sp:
-            self.assertIsNone(sp)
-
     def test_run_cmd_spinner_context_enabled(self):
         """Verifies explicitly setting spinner=True activates the Wave context."""
         cmd = RunCMD.__new__(RunCMD)
@@ -107,13 +98,22 @@ class TestSpinner(unittest.TestCase):
             )
 
     def test_run_cmd_spinner_disabled(self):
-        """Verifies spinner=False overrides long timeouts to suppress animation."""
-        cmd = RunCMD.__new__(RunCMD)
-        cmd.interactive = False
-        cmd.spinner = False
-        cmd.timeout = 60
-        cmd.cmd_args = ['echo', 'no spin']
-        with cmd._spinner() as sp:
+        """Verifies spinner=False suppresses animation for both short and long timeouts."""
+        # Timeout 0
+        cmd_zero = RunCMD.__new__(RunCMD)
+        cmd_zero.interactive = False
+        cmd_zero.spinner = False
+        cmd_zero.timeout = 0
+        with cmd_zero._spinner() as sp:
+            self.assertIsNone(sp)
+
+        # Timeout 60
+        cmd_long = RunCMD.__new__(RunCMD)
+        cmd_long.interactive = False
+        cmd_long.spinner = False
+        cmd_long.timeout = 60
+        cmd_long.cmd_args = ['echo', 'no spin']
+        with cmd_long._spinner() as sp:
             self.assertIsNone(sp)
 
     def test_spinner_context_manager_captured(self):

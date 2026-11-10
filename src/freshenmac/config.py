@@ -11,11 +11,12 @@ APP_INFO: dict[str, str] = {
     'Description': 'Updates macOS operating system, App store, and homebrew',
     'Email':       'matt@panther37.com',
     'Name':        'FreshenMac',
-    'Version':     '2.1.0',
+    'Version':     '2.1.1',
 }
 
 # Debug & Execution Limits
 DEFAULTS: dict[str, Any] = {
+    'Arrow':                 '═▷',
     'Debug Limit':           10000,
     'Download Speed Buffer': 0.25,  # 25% safety buffer on calculated download times
     'Download Speed Mbps':   5.0,  # Default: 5 Mbps (Slow DSL / Rural / Hotspot)
@@ -29,7 +30,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Module build number
-FILE_BUILD = 20261109
+FILE_BUILD = 20261110
 
 # Idle Thresholds (seconds)
 IDLE_THRESHOLD: dict[str, int] = {

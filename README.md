@@ -5,7 +5,7 @@ A friendly tool that automatically keeps macOS, Homebrew, and App Store apps upd
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.15-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-368%20passed-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-367%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
@@ -287,7 +287,7 @@ flowchart TD
 
 ## Running Tests
 
-FreshenMac has 368 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
+FreshenMac has 370 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
 These tests verify that everything works correctly and that code follows strict project rules (like keeping classes,
 methods, constants, and imports in alphabetical order):
 
