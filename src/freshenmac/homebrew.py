@@ -10,11 +10,11 @@ from typing import Any
 
 from freshenmac import fix, plist
 from freshenmac.boot import RebootState
-from freshenmac.config import DEFAULTS, TIMEOUT
+from freshenmac.config import APP_INFO, DEFAULTS, TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261109
+FILE_BUILD = 20261110
 
 PATTERN: dict[str, re.Pattern[str]] = {
     'Content Length': re.compile(r"content-length:\s*(?P<length>\d+)", re.IGNORECASE),
@@ -45,6 +45,7 @@ class HomeBrew:
         self,
         is_arm: bool,
         *,
+        arrow: str = DEFAULTS['Arrow'],
         cask_timeout: int = TIMEOUT['Homebrew']['Cask'],
         cmake_timeout: int = TIMEOUT['Homebrew']['CMake Build'],
         debug_vars: dict[str, int] | None = None,
@@ -54,6 +55,7 @@ class HomeBrew:
         reboot: RebootState | None = None,
         timeout: int = TIMEOUT['Homebrew']['Formula'],
     ) -> None:
+        self.arrow = arrow
         self.attempted_installs: set[str] = set()
         self.attempted_updates: set[str] = set()
         self.summary_results: dict[str, dict[str, str]] = {'updated': {}, 'unchanged': {}, 'installed': {}}
@@ -156,24 +158,39 @@ class HomeBrew:
                         )
                     continue
 
-            value = f"{installed} ═▷ {current}" if (installed and current) else (current or installed)
+            value = self._ver_to_ver(installed, current)
             bottle_type = i.get('bottle_type', 'formulae')
             if bottle_type in outdated:
                 outdated[bottle_type][name] = value
 
         return outdated
 
-    def _make_brew_cmd(self, bottle: str, action: str = 'upgrade', cask: bool = False, timeout: int = 0) -> RunCMD:
+    def _make_brew_cmd(
+        self,
+        bottle: str,
+        action: str = 'upgrade',
+        *,
+        cask: bool = False,
+        nice: bool = True,
+        timeout: int = 0,
+    ) -> RunCMD:
+        """
+        :param cask: Is it a cask?
+        :param nice: True: ``taskpolicy -c utility`` + command
+        """
         a_cmd = [str(self.brew_path), action, '--yes']
         if cask:
             a_cmd.append('--cask')
         a_cmd.append(bottle)
-        if not timeout:
-            timeout = self.timeout
-        cmd = RunCMD(a_cmd, **self.cmd_options({'timeout': timeout}))
+        opts_dict: dict[str, Any] = {'environ': {'HOMEBREW_NO_ENV_HINTS': '1'}}
+        if not nice:
+            opts_dict['taskpolicy'] = None
+        if timeout:
+            opts_dict['timeout'] = timeout
+        cmd = RunCMD(a_cmd, **self.cmd_options(opts_dict))
         if not cmd:
             context = self._failure_context(cmd, bottle)
-            cmd = self.fixer.recover(context, lambda: RunCMD(a_cmd, **self.cmd_options({'timeout': timeout}))) or cmd
+            cmd = self.fixer.recover(context, lambda: RunCMD(a_cmd, **self.cmd_options(opts_dict))) or cmd
         return cmd
 
     def _parse_outdated(self, json_data: str | dict[str, Any]) -> list[dict[str, str]]:
@@ -244,8 +261,8 @@ class HomeBrew:
         outdated = outdated_formulae if outdated_formulae is not None else {}
 
         already_ok: list[str] = []
-        to_update: list[tuple[str, str]] = []
         to_install: list[str] = []
+        to_update: list[tuple[str, str]] = []
 
         for dep in deps:
             if dep not in installed_info or not installed_info[dep]:
@@ -275,7 +292,7 @@ class HomeBrew:
                     self.updates_performed = True
                 self.attempted_updates.add(dep)
                 outdated.pop(dep, None)
-                new_ver = ver_str.split('═▷')[-1].strip() if '═▷' in ver_str else ver_str
+                new_ver = ver_str.split(self.arrow)[-1].strip() if self.arrow in ver_str else ver_str
                 self.brew_list[dep] = [parse_version(new_ver)]
                 self.logger.store(f"Successfully upgraded dependency {dep} ({ver_str})", 'Homebrew')
             else:
@@ -436,6 +453,9 @@ class HomeBrew:
 
             self._upgrade_formula(f_name, ver, outdated_formulae)
 
+    def _ver_to_ver(self, start_ver: str, end_ver: str) -> str:
+        return f"{start_ver} {self.arrow} {end_ver}" if (start_ver and end_ver) else (end_ver or start_ver)
+
     def _warning(self, action: str, package: str, err_no: int = 0, err_msg: str = '') -> None:
         message = 'failed because the Xcode license agreement has not been accepted'
         if err_no:
@@ -501,7 +521,7 @@ class HomeBrew:
         base_overhead = TIMEOUT['Homebrew']['Base Overhead']
         return int(base_overhead + buffered_download_sec)
 
-    def cmd_options(self, update_options: dict | None = None) -> dict[str, Any]:
+    def cmd_options(self, update_options: dict | None = None, **kwargs: Any) -> dict[str, Any]:
         """Common options dictionary for long-running system/app updates under utility QoS."""
         options = {
             'cancelable': True,
@@ -511,6 +531,8 @@ class HomeBrew:
         }
         if update_options:
             options.update(update_options)
+        if kwargs:
+            options.update(kwargs)
         return options
 
     @property
@@ -631,32 +653,29 @@ class HomeBrew:
 
         if ver_str is None:
             outdated = self._get_outdated()
-            ver_str = outdated.get('casks', {}).pop('freshenmac', None)
+            ver_str = outdated.get('casks', {}).pop(APP_INFO['Name'].lower(), None)
             if not ver_str:
                 return False
 
-        curr_ver = ver_str.split('═▷')[-1].strip() if '═▷' in ver_str else ver_str
-        formatted_ver = f"freshenmac ({ver_str})" if ver_str else 'freshenmac'
-        self.log(f"════ Updating FreshenMac First: {formatted_ver} ════")
+        curr_ver = ver_str.split(self.arrow)[-1].strip() if self.arrow in ver_str else ver_str
+        formatted_ver = f"{APP_INFO['Name']} ({ver_str})" if ver_str else APP_INFO['Name']
+        self.log(f"════ Updating {APP_INFO['Name']} First: {formatted_ver} ════")
         try:
-            upgrade_cmd = RunCMD(
-                [str(self.brew_path), 'upgrade', '--cask', '--yes', 'freshenmac'],
-                **self.cmd_options({'timeout': 300}),
-            )
+            upgrade_cmd = self._make_brew_cmd(APP_INFO['Name'].lower(), cask=True, nice=False, timeout=300)
             if upgrade_cmd:
                 self.updates_performed = True
-                self.summary_results['updated']['freshenmac'] = ver_str
+                self.summary_results['updated'][APP_INFO['Name'].lower()] = ver_str
                 self.logger.print_store(
-                    f"✔︎ [Self-Update] FreshenMac successfully upgraded to {curr_ver} (takes effect on next run).",
+                    f"✔︎ [Self-Update] {APP_INFO['Name']} upgraded to {curr_ver} (takes effect on next run).",
                     'SelfUpdate',
                 )
                 return True
 
-            self._warning('upgrade --cask', 'freshenmac', upgrade_cmd.returncode, upgrade_cmd.stderr)
+            self._warning('upgrade --cask', APP_INFO['Name'].lower(), upgrade_cmd.returncode, upgrade_cmd.stderr)
             return False
 
-        except Exception as err:
-            self.logger.store(f"Self-update check error: {err}", 'SelfUpdate')
+        except Exception as err_upgrade:
+            self.logger.store(f"Self-update check error: {err_upgrade}", 'SelfUpdate')
             return False
 
     def snapshot_installed(self) -> dict[str, str]:
@@ -762,7 +781,7 @@ class HomeBrew:
             start_ver = start_snapshot.get(pkg, '')
             end_ver = end_snapshot.get(pkg, start_ver)
             if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
-                self.summary_results['updated'][pkg] = f"{start_ver} ═▷ {end_ver}"
+                self.summary_results['updated'][pkg] = self._ver_to_ver(start_ver, end_ver)
             elif start_ver:
                 self.summary_results['unchanged'][pkg] = start_ver
 
@@ -773,7 +792,7 @@ class HomeBrew:
             else:
                 start_ver = start_snapshot.get(pkg, '')
                 if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
-                    self.summary_results['updated'][pkg] = f"{start_ver} ═▷ {end_ver}"
+                    self.summary_results['updated'][pkg] = self._ver_to_ver(start_ver, end_ver)
                 else:
                     self.summary_results['unchanged'][pkg] = end_ver
 

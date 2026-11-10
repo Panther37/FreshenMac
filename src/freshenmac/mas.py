@@ -9,7 +9,7 @@ from typing import Any
 from freshenmac import boot, config, plist, util
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261110
 PATTERN: dict[str, re.Pattern[str]] = {
     'Mas Size':   re.compile(r"Size\s+.*?([0-9,]+(?:\.[0-9]+)?)\s*(GB|MB|KB)", re.IGNORECASE),
     'Mas Update': re.compile(r"^\s*(?P<id>\d+)\s+(?P<name>.+?)\s+(?P<vers>\([^)]+\))"),
@@ -181,7 +181,7 @@ class AppStore:
 
             match = PATTERN['Mas Update'].match(line)
             if match:
-                vers = match.group('vers').strip('()').replace('->', '═▷').strip()
+                vers = match.group('vers').strip('()').replace('->', config.DEFAULTS['Arrow']).strip()
                 found_updates.append((match.group('id'), match.group('name').strip(), vers))
 
         self.log.print_store(f"Found {len(found_updates)} {comp} update{'s' if len(found_updates) != 1 else ''}:", comp)

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Please wrap at 120 characters.
 
+## [2.1.1] - 2026-11-10
+
+### Fixed
+- Fixed password prompting and process hangs during `HomeBrew.self_update_freshenmac()` by adding `validate=True`
+  to `RunCMD.can_sudo()` (testing `sudo -n -v`) in `src/freshenmac/util.py` to ensure interactive sessions validate
+  and prime sudo credentials when general cached root access is not active, even when `/usr/bin/true` is passwordless
+  in `/etc/sudoers.d/freshenmac` (resolves [#27]).
+- Suppressed environment hints during cask self-updates by forwarding `HOMEBREW_NO_ENV_HINTS=1` in
+  `self_update_freshenmac()`.
+- Removed destructive `uninstall_preflight_steps` block from `panther37/homebrew-tap/Casks/freshenmac.rb` that
+  erroneously executed `freshenmac --action Uninstall` with `sudo: true` during `brew upgrade --cask freshenmac`.
+
+### Changed
+- Cleaned up redundant tests across `test/test_run_cmd.py`, `test/test_spinner.py`, and `test/test_reboot_state.py`:
+  removed duplicate `TestSudoKeepAlive.test_context_manager` (covered by `TestRunner.test_context_manager`), removed
+  duplicate `TestRunAppleScript.test_debug_limit_default_and_custom` (covered by `TestRunCMD`), removed
+  duplicate `euid == 0` check from `test_can_sudo_validate`, consolidated `spinner=False` timeout checks
+  in `test/test_spinner.py`, and streamlined truthiness and initialization tests in `test/test_reboot_state.py`.
+
 ## [2.1.0] - 2026-11-09
 
 ### Added
@@ -17,12 +36,14 @@ Please wrap at 120 characters.
 - Added unit tests in `test/test_run_cmd.py` verifying `RunCMD` working directory inheritance and `PrivilegedCMD`
   root path isolation.
 - Added autonomous diagnostic and self-healing recovery engine in `src/freshenmac/fix.py` with `RecoveryEngine`
-  (supporting dynamic subsystem rule resolution via `target=self`), concrete `FailureInfo` (featuring `from_runcmd()`),
-  and `fix.rules_homebrew()` providing lightweight dictionary-based diagnostic rules for Python interpreter mismatches
-  (`BrewPythonMismatch`), unaccepted Xcode licenses (`XcodeLicense`), stranded git tap locks (`BrewGitRebase`),
-  unlinked keg conflicts (`BrewLinkConflict`), and transient network dropouts (`TransientNetwork`).
+  (supporting dynamic subsystem rule resolution via `target=self`), concrete `FailureInfo` (featuring
+  `from_runcmd()`), and `fix.rules_homebrew()` providing lightweight dictionary-based diagnostic rules for Python
+  interpreter mismatches (`BrewPythonMismatch`), unaccepted Xcode licenses (`XcodeLicense`), stranded git tap locks
+  (`BrewGitRebase`), unlinked keg conflicts (`BrewLinkConflict`), and transient network dropouts (`TransientNetwork`,
+  [#26], resolves [#25]).
 - Added `HomeBrew.reinstall_dependency()` in `src/freshenmac/homebrew.py` to automatically reinstall and repair
-  broken build tools (such as `meson` or `ninja`) when runtime interpreter mismatches occur during source builds.
+  broken build tools (such as `meson` or `ninja`) when runtime interpreter mismatches occur during source builds
+  ([#26], resolves [#25]).
 - Added `Xcode.is_license_error()` and unified Darwin SDK build license detection in `src/freshenmac/xcode.py`,
   allowing any subsystem to detect and recover from unaccepted Xcode license agreement errors.
 - Added comprehensive unit and integration tests in `test/test_fix.py`, `test/test_xcode.py`, and
@@ -44,7 +65,7 @@ Please wrap at 120 characters.
   and `'Software Update'` section in `config.TIMEOUT`.
 - Added Homebrew Cask installation and management instructions to Quick Start in `README.md`.
 - Added `HomeBrew.self_update_freshenmac()` in `src/freshenmac/homebrew.py` to check for and apply FreshenMac cask
-  updates as Step 0 before performing any other software updates ([#23]).
+  updates as Step 0 before performing any other software updates ([#24], resolves [#23]).
 - Added `download-speed` preference key in `src/freshenmac/plist.py` (`SavePreferences.SCHEMA`) to configure minimum
   expected download speed for dynamic Mac App Store timeouts.
 - Added dynamic Homebrew Cask download timeouts via `HomeBrew.calculate_cask_timeout()` and
@@ -158,13 +179,13 @@ Please wrap at 120 characters.
 ### Added
 - Added `TortimerCreds` dataclass in `src/freshenmac/util.py` to encapsulate administrative credentials, securely
   discover the console user via `os.stat`/`pwd.getpwuid`, and mask secrets in string representations (`repr=False`,
-  resolves [#20]).
+  [#22], resolves [#20]).
 - Added real Homebrew forced update test fixture under `test/fixtures/brew/update/force/20261026-1159/` and integration
   tests in `test/test_fixtures.py`.
 
 ### Changed
 - Adopted `TortimerCreds` in `src/freshenmac/main.py` and `src/freshenmac/computer.py` for FileVault and Volume
-  Ownership credential resolution ([#20]).
+  Ownership credential resolution ([#22], resolves [#20]).
 
 ## [1.4.2] - 2026-10-26
 
@@ -214,17 +235,17 @@ Please wrap at 120 characters.
 ## [1.3.0] - 2026-10-19
 
 ### Changed
-- Refactored `debug_vars` parameter passing across modules ([#12]).
+- Refactored `debug_vars` parameter passing across modules ([#12], resolves [#11]).
 
 ## [1.2.0] - 2026-10-17
 
 ### Added
-- Added `install` action option for background service setup ([#8]).
+- Added `install` action option for background service setup ([#8], resolves [#7]).
 
 ## [1.1.1] - 2026-10-14
 
 ### Fixed
-- Fixed update plist bug and minor execution issues ([#6]).
+- Fixed update plist bug and custom LaunchAgent schedule handling ([#6], resolves [#5]).
 
 ## [1.1.0] - 2026-10-13
 
@@ -232,13 +253,15 @@ Please wrap at 120 characters.
 - Feature release for FreshenMac update orchestrator.
 
 ### Fixed
-- Fixed background updates plist generation and handling ([#4]).
+- Fixed background updates plist generation and reboot trigger tracking ([#4], resolves [#3]).
 
 ## [1.0.0] - 2026-10-05
 
 ### Added
 - Initial release.
 
+[2.1.1]: https://github.com/Panther37/FreshenMac/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/Panther37/FreshenMac/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Panther37/FreshenMac/compare/v1.5.0...v2.0.0
 [1.5.0]: https://github.com/Panther37/FreshenMac/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/Panther37/FreshenMac/compare/v1.4.1...v1.4.2
@@ -249,6 +272,12 @@ Please wrap at 120 characters.
 [1.1.1]: https://github.com/Panther37/FreshenMac/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Panther37/FreshenMac/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Panther37/FreshenMac/releases/tag/v1.0.0
+[#27]: https://github.com/Panther37/FreshenMac/issues/27
+[#26]: https://github.com/Panther37/FreshenMac/pull/26
+[#25]: https://github.com/Panther37/FreshenMac/issues/25
+[#24]: https://github.com/Panther37/FreshenMac/pull/24
+[#23]: https://github.com/Panther37/FreshenMac/issues/23
+[#22]: https://github.com/Panther37/FreshenMac/pull/22
 [#21]: https://github.com/Panther37/FreshenMac/pull/21
 [#20]: https://github.com/Panther37/FreshenMac/issues/20
 [#18]: https://github.com/Panther37/FreshenMac/pull/18
@@ -256,7 +285,11 @@ Please wrap at 120 characters.
 [#16]: https://github.com/Panther37/FreshenMac/pull/16
 [#15]: https://github.com/Panther37/FreshenMac/issues/15
 [#12]: https://github.com/Panther37/FreshenMac/pull/12
+[#11]: https://github.com/Panther37/FreshenMac/issues/11
 [#10]: https://github.com/Panther37/FreshenMac/issues/10
 [#8]: https://github.com/Panther37/FreshenMac/pull/8
+[#7]: https://github.com/Panther37/FreshenMac/issues/7
 [#6]: https://github.com/Panther37/FreshenMac/pull/6
+[#5]: https://github.com/Panther37/FreshenMac/issues/5
 [#4]: https://github.com/Panther37/FreshenMac/pull/4
+[#3]: https://github.com/Panther37/FreshenMac/issues/3

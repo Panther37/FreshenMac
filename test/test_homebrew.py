@@ -550,7 +550,7 @@ class TestHomeBrew(unittest.TestCase):
             self.assertTrue(result)
             self.assertTrue(brew.updates_performed)
             upgrade_call = mock_run.call_args_list[1][0][0]
-            self.assertEqual(upgrade_call, [str(brew.brew_path), 'upgrade', '--cask', '--yes', 'freshenmac'])
+            self.assertEqual(upgrade_call, [str(brew.brew_path), 'upgrade', '--yes', '--cask', 'freshenmac'])
 
     def test_self_update_freshenmac_with_preparsed_version(self):
         """Verifies self_update_freshenmac skips querying outdated when version string is provided."""
@@ -563,7 +563,7 @@ class TestHomeBrew(unittest.TestCase):
             self.assertTrue(result)
             self.assertTrue(brew.updates_performed)
             self.assertEqual(mock_run.call_count, 1)
-            self.assertEqual(mock_run.call_args[0][0], [str(brew.brew_path), 'upgrade', '--cask', '--yes', 'freshenmac'])
+            self.assertEqual(mock_run.call_args[0][0], [str(brew.brew_path), 'upgrade', '--yes', '--cask', 'freshenmac'])
 
     def test_resolve_and_update_dependencies_failure_short_circuits(self):
         """Verifies failed dependency stops formula upgrade and skips parent build."""

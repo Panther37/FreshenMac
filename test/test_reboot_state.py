@@ -11,27 +11,25 @@ class TestRebootState(unittest.TestCase):
     """
 
     def test_counter_truthiness(self):
-        """Verifies boolean evaluation of zero vs non-zero reboot counter values."""
-        # Arrange: Fresh instance starts with all counts at 0 (falsy)
-        state = RebootState()
-        self.assertFalse(bool(state.required))
-        self.assertFalse(bool(state.suggested))
-        self.assertFalse(bool(state))
+        """Verifies truthiness evaluation when required or suggested updates are populated."""
+        # Populating required list makes state truthy
+        state_required = RebootState()
+        state_required.required.append('Update')
+        self.assertTrue(bool(state_required.required))
+        self.assertTrue(bool(state_required))
 
-        # Act & Assert: Incrementing required counter makes it truthy
-        state.required.append('Update')
-        self.assertTrue(bool(state.required))
-        self.assertTrue(bool(state))
-
-        # Act & Assert: Incrementing suggested counter makes it truthy
-        state.suggested.append('Cask')
-        self.assertTrue(bool(state.suggested))
+        # Populating suggested list makes state truthy
+        state_suggested = RebootState()
+        state_suggested.suggested.append('Cask')
+        self.assertTrue(bool(state_suggested.suggested))
+        self.assertTrue(bool(state_suggested))
 
     def test_default_values(self):
-        """Verifies default initialization values for counters and reason string."""
+        """Verifies default initialization values for counters and truthiness evaluation."""
         state = RebootState()
         self.assertEqual(state.required, [])
         self.assertEqual(state.suggested, [])
+        self.assertFalse(bool(state))
 
 
 if __name__ == '__main__':

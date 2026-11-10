@@ -23,7 +23,7 @@ from typing import Any, ClassVar, IO, Literal
 
 from freshenmac import config
 
-FILE_BUILD = 20261109
+FILE_BUILD = 20261110
 PATTERN: dict[str, re.Pattern[str]] = {
     'Word': re.compile(r"\w+"),
 }
@@ -530,10 +530,13 @@ class RunCMD:
             yield spinner
 
     @classmethod
-    def can_sudo(cls) -> bool:
+    def can_sudo(cls, validate: bool = False) -> bool:
         """Checks whether root privileges are available without prompting."""
         if os.geteuid() == 0:
             return True
+
+        if validate:
+            return bool(cls(['sudo', '-n', '-v']))
 
         return bool(cls(['true'], need_root=True))
 
@@ -726,7 +729,7 @@ class TortimerCreds:
         password = None
 
         if is_interactive():
-            if not RunCMD.can_sudo():
+            if not RunCMD.can_sudo(validate=True):
                 print("\nAdministrator privileges required for system maintenance.  Priming sudo credentials...")
                 RunCMD(['sudo', '-v'], interactive=True, timeout=120)
 
