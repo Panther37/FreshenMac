@@ -23,7 +23,7 @@ from typing import Any, ClassVar, IO, Literal
 
 from freshenmac import config
 
-FILE_BUILD = 20261110
+FILE_BUILD = 20261118
 PATTERN: dict[str, re.Pattern[str]] = {
     'Word': re.compile(r"\w+"),
 }
@@ -326,12 +326,13 @@ class RunAppleScript:
             )
         try:
             if self.background:
-                subprocess.Popen(['osascript', '-e', self.script])
+                subprocess.Popen(['osascript', '-e', self.script], cwd='/')
                 return
 
             result = subprocess.run(
                 ['osascript', '-e', self.script],
                 capture_output=True,
+                cwd='/',
                 text=True,
                 timeout=self.timeout,
             )
@@ -351,12 +352,14 @@ class RunAppleScript:
             limit = self.debug_limit
             print(
                 "\n─────── RunAppleScript ───────\n"
-                f"Command:    {self.script}\n"
-                f"ReturnCode: {self.returncode}\n"
+                f"Command:     {self.script}\n"
+                f"Return Code: {self.returncode}\n"
                 f"Output: \n{self.stdout[:limit]}◊\n"
                 f"Error: \n{self.stderr[:limit] or str(self.error)[:limit] or 'None '}◊\n"
                 "───────────── 🍎︎ ─────────────\n",
             )
+        elif self.debug == 1:
+            print(f"Return Code: {self.returncode}\n")
 
 
 class RunCMD:
@@ -424,11 +427,14 @@ class RunCMD:
         if self.debug > 1:
             print(
                 "\n─────────── RunCMD ───────────\n"
-                f"Command: {self.cmd_args}\n"
+                f"Command:     {self.cmd_args}\n"
+                f"Return Code: {self.returncode}\n"
                 f"Output: \n{self.limiter(self.stdout)}◊\n"
                 f"Error: \n{self.limiter(self.stderr)}◊\n"
                 f'''{f" {self.shell_cmd or ''} ":─^30}\n''',
             )
+        elif self.debug == 1:
+            print(f"Return Code: {self.returncode}\n")
 
     def __bool__(self) -> bool:
         return self.returncode == 0
@@ -485,11 +491,17 @@ class RunCMD:
             return argument + a_cmd
 
     def _run_cmd(self, run_cmd_args: list[str], popen_env: dict[str, str] | None) -> None:
+        cwd = str(self.cwd) if self.cwd else None
+        if not cwd:
+            try:
+                os.getcwd()
+            except OSError:
+                cwd = '/'
         try:
             result = subprocess.run(
                 run_cmd_args,
                 capture_output=(not self.interactive),
-                cwd=str(self.cwd) if self.cwd else None,
+                cwd=cwd,
                 env=popen_env,
                 executable=self.shell_cmd,
                 input=self.to_input,
@@ -600,7 +612,10 @@ class RunCMD:
         with self._spinner():
             self._run_cmd(run_cmd_args, popen_env)
 
-    def splitlines(self) -> list[str]:
+    def splitlines(self, clean: bool = False) -> list[str]:
+        if clean:
+            return [line for x in self.stdout.splitlines() if (line := x.strip())]
+
         return self.stdout.splitlines()
 
     @property

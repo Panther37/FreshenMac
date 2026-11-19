@@ -16,7 +16,7 @@ from freshenmac.config import APP_INFO, IDLE_THRESHOLD
 if TYPE_CHECKING:
     from freshenmac.computer import MacOS
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261110
 
 
 @dataclass
@@ -287,7 +287,7 @@ class Reboot:
         started = False
         if not self.dry_run and shutil.which('caffeinate'):
             a_cmd = [f"caffeinate -dim -w {pid} >/dev/null 2>&1 &"]
-            caffeinate_cmd = util.RunCMD(a_cmd, need_shell=True, **self.debug_vars)
+            caffeinate_cmd = util.RunCMD(a_cmd, cwd=Path('/'), need_shell=True, **self.debug_vars)
             if caffeinate_cmd:
                 self.log(f"Spawned caffeinate attached to PID {pid} via RunCMD.")
                 started = True

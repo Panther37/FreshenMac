@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from freshenmac.fix import (
-    DEFAULT_BACKOFF,
     PATTERN,
     FailureInfo,
     RecoveryEngine,
@@ -82,6 +82,27 @@ class TestRecoveryEngine(unittest.TestCase):
         self.assertEqual(ctx.stderr, "Error output")
         self.assertEqual(ctx.stdout, "Standard output")
         self.assertEqual(ctx.subsystem, 'Homebrew')
+
+        # log_file=None falls back to Homebrew log discovery (empty Path when missing or non-Homebrew)
+        ctx_missing = FailureInfo.from_runcmd(mock_cmd, package='nonexistent_pkg_12345', subsystem='Homebrew')
+        self.assertEqual(ctx_missing.log_file, Path())
+
+        with tempfile.TemporaryDirectory() as tmp_home:
+            pkg_logs = Path(tmp_home) / 'Library' / 'Logs' / 'Homebrew' / 'qemu'
+            pkg_logs.mkdir(parents=True)
+            older = pkg_logs / '01.configure.log'
+            newer = pkg_logs / '02.build.log'
+            older.write_text('old', encoding='utf-8')
+            newer.write_text('new', encoding='utf-8')
+            os.utime(older, (1000, 1000))
+            os.utime(newer, (2000, 2000))
+
+            with patch('freshenmac.fix.Path.home', return_value=Path(tmp_home)):
+                ctx_found = FailureInfo.from_runcmd(mock_cmd, package='qemu', subsystem='Homebrew')
+                self.assertEqual(ctx_found.log_file, newer)
+                ctx_mas = FailureInfo.from_runcmd(mock_cmd, package='qemu', subsystem='MAS')
+                self.assertEqual(ctx_mas.log_file, Path())
+                self.assertEqual(FailureInfo._get_log_path(''), Path())
 
     def test_failure_context_from_runcmd_uninitialized_fails(self):
         """Verifies FailureInfo.from_runcmd raises AttributeError if given an uninitialized RunCMD object."""

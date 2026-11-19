@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import grp
 import itertools
 import json
 import plistlib
@@ -8,13 +9,13 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from functools import cached_property
-from os import getuid
+from os import W_OK, access, getuid
 from pathlib import Path
 from typing import Any, ClassVar
 
 from freshenmac import config, util
 
-FILE_BUILD = 20261103
+FILE_BUILD = 20261118
 
 
 @dataclass
@@ -191,15 +192,12 @@ class LaunchAgent(util.PrivilegedCMD):
         self.sudoers = f"/etc/sudoers.d/{config.APP_INFO['Name'].lower()}"
 
     def _init_log_files(self) -> None:
-        """Ensures stdout and stderr log files exist in log_dir with write permissions."""
+        """Ensures stdout and stderr log files exist in log_dir with group-writable permissions."""
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
-            for log_file in [
-                self.log_dir / f"{self.label}.stdout.log",
-                self.log_dir / f"{self.label}.stderr.log",
-            ]:
-                log_file.touch(exist_ok=True)
-                log_file.chmod(0o666)
+            for i in self.log_files:
+                i.touch()
+                i.chmod(0o664)
         except OSError:
             pass  # Best-effort pre-creation; privileged install or Logger fallback handles permissions later
 
@@ -211,6 +209,7 @@ class LaunchAgent(util.PrivilegedCMD):
         tmp_plist.write_bytes(plist_data)
 
         sudoers_cmds, tmp_sudoers = self._prepare_sudoers_commands()
+        stdout_log, stderr_log = self.log_files
 
         commands = [
             f"mkdir -p '{self.launch_agents_dir}'",
@@ -218,8 +217,9 @@ class LaunchAgent(util.PrivilegedCMD):
             f"chown root:wheel '{self.target_plist}'",
             f"chmod 644 '{self.target_plist}'",
             f"mkdir -p '{self.log_dir}'",
-            f"touch '{self.log_dir}/{self.label}.stdout.log' '{self.log_dir}/{self.label}.stderr.log'",
-            f"chmod 666 '{self.log_dir}/{self.label}.'*.log",
+            f"touch '{stdout_log}' '{stderr_log}'",
+            f"chown root:localaccounts '{stdout_log}' '{stderr_log}'",
+            f"chmod 664 '{stdout_log}' '{stderr_log}'",
             f"touch '{config.PATHS['Log']['System']}'",
             f"chown root:admin '{config.PATHS['Log']['System']}'",
             f"chmod 664 '{config.PATHS['Log']['System']}'",
@@ -330,6 +330,7 @@ class LaunchAgent(util.PrivilegedCMD):
         session_types = ['Aqua', 'Standard']
         if not self.run_at_load:
             session_types += ['Background', 'LoginWindow']
+        stdout_log, stderr_log = self.log_files
         plist_dict: dict[str, Any] = {
             'EnvironmentVariables':   {
                 'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
@@ -337,8 +338,8 @@ class LaunchAgent(util.PrivilegedCMD):
             'Label':                  self.label,
             'LimitLoadToSessionType': session_types,
             'ProgramArguments':       [self.python_bin, str(self.target_script)],
-            'StandardErrorPath':      f"{self.log_dir}/{self.label}.stderr.log",
-            'StandardOutPath':        f"{self.log_dir}/{self.label}.stdout.log",
+            'StandardErrorPath':      str(stderr_log),
+            'StandardOutPath':        str(stdout_log),
         }
         if self.run_at_load:
             plist_dict['RunAtLoad'] = True
@@ -348,7 +349,13 @@ class LaunchAgent(util.PrivilegedCMD):
 
     def check_and_install(self) -> bool:
         """Verifies LaunchAgent installation, activating if needed."""
-        if self.plist_needs_install:
+        needs_install = self.plist_needs_install
+        if not needs_install and self.logs_need_install:
+            logs_writable = all(x.is_file() and access(x, W_OK) for x in self.log_files)
+            can_elevate = getuid() == 0 or util.is_interactive() or util.RunCMD.can_sudo(validate=True)
+            needs_install = (not logs_writable) or can_elevate
+
+        if needs_install:
             if not self.install():
                 return False
 
@@ -418,6 +425,35 @@ class LaunchAgent(util.PrivilegedCMD):
             util.RunCMD(['launchctl', 'print', gui_target], **self._launchctrl_print_vars)
             or util.RunCMD(['launchctl', 'list', self.label], **self.debug_vars),
         )
+
+    @property
+    def log_files(self) -> tuple[Path, Path]:
+        """Returns the stdout and stderr log paths configured for the LaunchAgent."""
+        return (
+            self.log_dir / f"{self.label}.stdout.log",
+            self.log_dir / f"{self.label}.stderr.log",
+        )
+
+    @property
+    def logs_need_install(self) -> bool:
+        """Checks if LaunchAgent stdout/stderr log files are missing or have incorrect permissions."""
+        if not all(x.is_file() for x in self.log_files):
+            return True
+
+        try:
+            localaccounts_gid = grp.getgrnam('localaccounts').gr_gid if self.log_dir == Path('/Library/Logs') else None
+        except KeyError:
+            localaccounts_gid = None
+
+        for i in self.log_files:
+            stat = i.stat()
+            if (stat.st_mode & 0o777) != 0o664:
+                return True
+
+            if localaccounts_gid is not None and (stat.st_uid != 0 or stat.st_gid != localaccounts_gid):
+                return True
+
+        return False
 
     @property
     def plist_needs_install(self) -> bool:

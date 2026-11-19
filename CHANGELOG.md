@@ -6,13 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Please wrap at 120 characters.
 
+## [2.2.0] - 2026-11-18
+
+### Added
+- Added `BrewBottles` dataclass in `src/freshenmac/homebrew.py` to manage installed package inventories, version
+  lookups (`latest_version()`), in-place mutations (`mark_installed()`), snapshots, and upgrade diff calculation
+  (`compute_summary()`).
+- Added `BrewOutdated` dataclass in `src/freshenmac/homebrew.py` (`success: bool` required first field) to establish
+  a tri-state query model (updates available, 100% up to date, inspection failure) with backward-compatible mapping
+  protocols (`__getitem__`, `__contains__`, `.get()`).
+- Added `LaunchAgent.log_files` and `LaunchAgent.logs_need_install` properties in `src/freshenmac/plist.py` so
+  `check_and_install()` detects and repairs missing or misconfigured `stdout`/`stderr` log files.
+- Added `clean: bool = False` option to `RunCMD.splitlines()` in `src/freshenmac/util.py` to strip lines and skip
+  empty entries when requested, with coverage in `test/test_run_cmd.py`.
+- Added `self.fixer.recover()` handling and failure abortion for `brew deps` in `HomeBrew._get_dependencies()`.
+- Added automatic Homebrew build-log discovery (`FailureInfo._get_log_path()`) in `src/freshenmac/fix.py` when
+  `FailureInfo.from_runcmd()` is invoked with `log_file=None`.
+
+### Changed
+- Unified Homebrew outdated query and parse pipeline in `src/freshenmac/homebrew.py` via `_inspect_outdated()`,
+  `_read_outdated()`, `_parse_outdated()`, and single-pass `_parse_bottle_entries()`, eliminating duplicate flattening
+  and unnesting loops.
+- Centralized `brew list --versions` parsing into `BrewBottles.from_cmd()`, eliminating duplicate execution between
+  `brew_list` and `snapshot_installed()`.
+- Replaced manual snapshot diff loops in `HomeBrew.update()` with `BrewBottles.compute_summary()` (returning a
+  unified `'Installed'`/`'Unchanged'`/`'Updated'` dictionary), added post-update target verification via
+  `_validate_updates()`, and refactored `HomeBrew.update()` and `_resolve_and_update_dependencies()` into modular
+  single-purpose helpers.
+- Tightened `LaunchAgent` `stdout`/`stderr` log permissions in `src/freshenmac/plist.py` from world-writable `0666`
+  to `root:localaccounts` `0664` (`_install_privileged()`) and `0664` (`_init_log_files()`), allowing any local user's
+  `launchd` session to start without exposing log files to system/daemon accounts.
+- Updated `HomeBrew.self_update_freshenmac()` in `src/freshenmac/homebrew.py` to invoke `--action Install` on the
+  newly upgraded binary when sudo is validated, applying LaunchAgent and log permission updates right after a cask
+  self-upgrade.
+- Added return code output at `debug == 1` in `RunAppleScript` and `RunCMD` (plus `Return Code` in `RunCMD`
+  `debug > 1` output) in `src/freshenmac/util.py`, propagated `main()` exit status under `--trace` in
+  `src/FreshenMac.py`, and updated the run log start banner in `src/freshenmac/main.py` to `'-=-= New Run =-=-'`.
+- Consolidated overlapping logger, dependency update, and line-truncation test cases and added `_attach_stdout_lines()`
+  test helper across `test/test_homebrew.py` and `test/test_fix.py`.
+- Scoped `HomeBrew` environment variables (`PATH` based on `is_arm`, `HOMEBREW_NO_ASK`, `HOMEBREW_NO_ENV_HINTS`)
+  to `HomeBrew.environ` and `RunCMD(..., environ=...)` instead of mutating global `os.environ`.
+- Removed `HomeBrew._failure_context()` and moved Homebrew log lookup from `HomeBrew._get_log_path()` into
+  `FailureInfo._get_log_path()` in `src/freshenmac/fix.py` (with unit tests moved to `test/test_fix.py`).
+- Simplified `HomeBrew.recover_rebase()` to select `/opt/homebrew` or `/usr/local` via `is_arm` and execute git
+  cleanup commands via a shared loop.
+- Updated `README.md` with the `375` test count, `BrewBottles`/`BrewOutdated` behavior, and `freshenmac/fix.py` module
+  summary.
+
+### Fixed
+- Anchored startup and subprocess working directories to `/` across `src/FreshenMac.py`, `Reboot`
+  (`src/freshenmac/boot.py`), `RunAppleScript`, and `RunCMD._run_cmd()` (`src/freshenmac/util.py`) when the
+  inherited `cwd` is inaccessible or deleted, with unit tests in `test/test_run_cmd.py`.
+- Fixed unhandled `# TODO` on line 201 in `HomeBrew._parse_outdated()` and prevented `update()` from falsely logging
+  that all packages are up to date when `brew outdated` encounters execution or JSON decode errors.
+- Fixed LaunchAgent `EX_CONFIG` (`78`) failures caused by missing `/Library/Logs/com.panther37.FreshenMac.*.log` files
+  by checking `logs_need_install` during `LaunchAgent.check_and_install()` (skipping privilege escalation on
+  unattended runs when legacy log files are already writable, with unit tests in `test/test_plist.py`; resolves
+  [#29]).
+
 ## [2.1.1] - 2026-11-10
 
 ### Fixed
 - Fixed password prompting and process hangs during `HomeBrew.self_update_freshenmac()` by adding `validate=True`
   to `RunCMD.can_sudo()` (testing `sudo -n -v`) in `src/freshenmac/util.py` to ensure interactive sessions validate
   and prime sudo credentials when general cached root access is not active, even when `/usr/bin/true` is passwordless
-  in `/etc/sudoers.d/freshenmac` (resolves [#27]).
+  in `/etc/sudoers.d/freshenmac` ([#28], resolves [#27]).
 - Suppressed environment hints during cask self-updates by forwarding `HOMEBREW_NO_ENV_HINTS=1` in
   `self_update_freshenmac()`.
 - Removed destructive `uninstall_preflight_steps` block from `panther37/homebrew-tap/Casks/freshenmac.rb` that
@@ -260,6 +318,8 @@ Please wrap at 120 characters.
 ### Added
 - Initial release.
 
+[Unreleased]: https://github.com/Panther37/FreshenMac/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Panther37/FreshenMac/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/Panther37/FreshenMac/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/Panther37/FreshenMac/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Panther37/FreshenMac/compare/v1.5.0...v2.0.0
@@ -272,6 +332,8 @@ Please wrap at 120 characters.
 [1.1.1]: https://github.com/Panther37/FreshenMac/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Panther37/FreshenMac/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Panther37/FreshenMac/releases/tag/v1.0.0
+[#29]: https://github.com/Panther37/FreshenMac/issues/29
+[#28]: https://github.com/Panther37/FreshenMac/pull/28
 [#27]: https://github.com/Panther37/FreshenMac/issues/27
 [#26]: https://github.com/Panther37/FreshenMac/pull/26
 [#25]: https://github.com/Panther37/FreshenMac/issues/25

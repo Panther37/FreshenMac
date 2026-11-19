@@ -14,7 +14,7 @@ from typing import Any
 from freshenmac import computer, plist, util
 from freshenmac.config import APP_INFO, DEFAULTS
 
-FILE_BUILD = 20261104
+FILE_BUILD = 20261110
 REBOOT_STR = {
     'Default': ['DEFAULT'],
     'Force':   ['FORCE', 'YES'],
@@ -57,7 +57,7 @@ def main(some_options: argparse.Namespace | list[str] | dict[str, Any] | None = 
         print(f"Options: {vars(options)}")
 
     logger = util.Logger(dry_run=options.dry_run)
-    logger.store('-', component='- Start -')
+    logger.store('-=-= New Run =-=-', component='- Start -')
 
     if options.action:
         return actions(options, logger)

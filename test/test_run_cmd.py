@@ -376,7 +376,7 @@ class TestRunAppleScript(unittest.TestCase):
         """Verifies background=True invokes subprocess.Popen without blocking."""
         with patch('subprocess.Popen') as mock_popen, patch('subprocess.run') as mock_run:
             ascript = RunAppleScript('display notification "test"', background=True)
-            mock_popen.assert_called_once_with(['osascript', '-e', 'display notification "test"'])
+            mock_popen.assert_called_once_with(['osascript', '-e', 'display notification "test"'], cwd='/')
             mock_run.assert_not_called()
             self.assertTrue(bool(ascript))
             self.assertEqual(ascript.returncode, 0)
@@ -489,6 +489,7 @@ class TestRunAppleScript(unittest.TestCase):
             mock_run.assert_called_once_with(
                 ['osascript', '-e', 'return 42'],
                 capture_output=True,
+                cwd='/',
                 text=True,
                 timeout=10,
             )
@@ -600,6 +601,19 @@ class TestRunCMD(unittest.TestCase):
             mock_sub.assert_called_once()
             _, kwargs = mock_sub.call_args
             self.assertEqual(kwargs['cwd'], '/tmp')
+
+    def test_cwd_fallback_on_inaccessible_getcwd(self):
+        """Verifies RunCMD falls back to root directory '/' when os.getcwd() raises OSError."""
+        with patch('os.getcwd', side_effect=FileNotFoundError(2, 'No such file or directory')):
+            with patch('subprocess.run') as mock_sub:
+                mock_sub.return_value.returncode = 0
+                mock_sub.return_value.stdout = ''
+                mock_sub.return_value.stderr = ''
+                cmd = RunCMD(['echo', 'test'])
+                self.assertIsNone(cmd.cwd)
+                mock_sub.assert_called_once()
+                _, kwargs = mock_sub.call_args
+                self.assertEqual(kwargs['cwd'], '/')
 
     def test_debug_limit_default_and_custom(self):
         """Verifies debug_limit clamps verbose command output printing."""
@@ -722,12 +736,17 @@ class TestRunCMD(unittest.TestCase):
 
     def test_splitlines_and_len(self):
         """Verifies RunCMD sequence indexing and splitlines length operations."""
-        cmd = RunCMD(['printf', 'line1\nline2\nline3\n'])
+        cmd = RunCMD(['printf', ' line1 \n  line2\nline3 \n'])
         self.assertEqual(len(cmd), 3)
-        self.assertEqual(cmd[0], 'line1')
-        self.assertEqual(cmd[1], 'line2')
-        self.assertEqual(cmd[2], 'line3')
-        self.assertEqual(list(cmd), ['line1', 'line2', 'line3'])
+        self.assertEqual(cmd[0], ' line1 ')
+        self.assertEqual(cmd[1], '  line2')
+        self.assertEqual(cmd[2], 'line3 ')
+        self.assertEqual(list(cmd), [' line1 ', '  line2', 'line3 '])
+        self.assertEqual(cmd.splitlines(clean=True), ['line1', 'line2', 'line3'])
+
+        cmd_blank = RunCMD(['printf', ' line1 \n   \nline2\n'])
+        self.assertEqual(cmd_blank.splitlines(), [' line1 ', '   ', 'line2'])
+        self.assertEqual(cmd_blank.splitlines(clean=True), ['line1', 'line2'])
 
     def test_std_all(self):
         """Verifies std_all joins stdout and stderr with double newlines."""

@@ -208,10 +208,12 @@ class TestLaunchAgent(unittest.TestCase):
 
     @patch('freshenmac.plist.util.RunCMD')
     def test_check_and_install_already_active(self, mock_cmd):
-        """Verifies check_and_install skips installation if plist and launchd are current."""
+        """Verifies check_and_install skips installation if plist, logs, and launchd are current."""
         agent = LaunchAgent(dry_run=False)
         with patch.object(
             LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False,
+        ), patch.object(
+            LaunchAgent, 'logs_need_install', new_callable=PropertyMock, return_value=False,
         ), patch.object(
             LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
         ), patch.object(
@@ -221,6 +223,27 @@ class TestLaunchAgent(unittest.TestCase):
         ) as mock_activate:
             self.assertTrue(agent.check_and_install())
             mock_install.assert_not_called()
+            mock_activate.assert_not_called()
+
+    @patch('freshenmac.plist.util.RunCMD')
+    def test_check_and_install_missing_logs(self, mock_cmd):
+        """Verifies check_and_install repairs missing LaunchAgent stdout/stderr logs even when plist is current."""
+        agent = LaunchAgent(dry_run=False)
+        with patch.object(
+            LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False,
+        ), patch.object(
+            LaunchAgent, 'logs_need_install', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            Path, 'is_file', return_value=False,
+        ), patch.object(
+            agent, 'install', return_value=True,
+        ) as mock_install, patch.object(
+            agent, 'activate',
+        ) as mock_activate:
+            self.assertTrue(agent.check_and_install())
+            mock_install.assert_called_once()
             mock_activate.assert_not_called()
 
     @patch('freshenmac.plist.util.RunCMD')
@@ -239,6 +262,31 @@ class TestLaunchAgent(unittest.TestCase):
             self.assertTrue(agent.check_and_install())
             mock_install.assert_called_once()
             mock_activate.assert_called_once()
+
+    @patch('freshenmac.plist.util.RunCMD')
+    def test_check_and_install_skips_unprivileged_legacy_logs(self, mock_cmd):
+        """Verifies unattended runs without sudo skip tightening already-writable legacy log files."""
+        mock_cmd.can_sudo.return_value = False
+        agent = LaunchAgent(dry_run=False)
+        with patch.object(
+            LaunchAgent, 'plist_needs_install', new_callable=PropertyMock, return_value=False,
+        ), patch.object(
+            LaunchAgent, 'logs_need_install', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            LaunchAgent, 'is_active', new_callable=PropertyMock, return_value=True,
+        ), patch.object(
+            Path, 'is_file', return_value=True,
+        ), patch(
+            'freshenmac.plist.access', return_value=True,
+        ), patch(
+            'freshenmac.plist.getuid', return_value=501,
+        ), patch(
+            'freshenmac.plist.util.is_interactive', return_value=False,
+        ), patch.object(
+            agent, 'install',
+        ) as mock_install:
+            self.assertTrue(agent.check_and_install())
+            mock_install.assert_not_called()
 
     @patch('freshenmac.plist.pwd.getpwnam')
     @patch('freshenmac.plist.util.TortimerCreds.get_console_user', return_value='matt')
@@ -344,12 +392,16 @@ class TestLaunchAgent(unittest.TestCase):
             self.assertTrue(mock_util_cmd.call_args[1].get('need_root'))
 
     def test_install_privileged_log_permissions(self):
-        """Verifies _install_privileged configures system log file with root:admin and 0664 permissions."""
+        """Verifies _install_privileged sets root:localaccounts 0664 on agent logs and root:admin 0664 on sys log."""
         agent = LaunchAgent(dry_run=False)
         with patch.object(agent, 'run_privileged', return_value=True) as mock_run:
             agent._install_privileged(b'<plist/>')
             called_cmd = mock_run.call_args[0][0]
             joined_cmd = ' '.join(called_cmd)
+            stdout_log, stderr_log = agent.log_files
+            self.assertIn(f"chown root:localaccounts '{stdout_log}' '{stderr_log}'", joined_cmd)
+            self.assertIn(f"chmod 664 '{stdout_log}' '{stderr_log}'", joined_cmd)
+            self.assertNotIn('chmod 666', joined_cmd)
             self.assertIn("chown root:admin '/Library/Logs/FreshenMac.log'", joined_cmd)
             self.assertIn("chmod 664 '/Library/Logs/FreshenMac.log'", joined_cmd)
 
@@ -427,6 +479,35 @@ class TestLaunchAgent(unittest.TestCase):
             f"[Dry-run] Would activate launchd service: {agent.label}",
             component='LaunchAgent',
         )
+
+    def test_logs_need_install(self):
+        """Verifies logs_need_install checks LaunchAgent log existence, ownership, and mode."""
+        agent = LaunchAgent(dry_run=True)
+
+        # Missing log file requires install
+        with patch.object(Path, 'is_file', return_value=False):
+            self.assertTrue(agent.logs_need_install)
+
+        # System logs matching root:localaccounts and 0664 -> does not need install
+        mock_grp = MagicMock(gr_gid=61)
+        mock_stat_res = MagicMock(st_uid=0, st_gid=61, st_mode=0o100664)
+        with patch.object(
+            Path, 'is_file', return_value=True,
+        ), patch.object(
+            Path, 'stat', return_value=mock_stat_res,
+        ), patch(
+            'freshenmac.plist.grp.getgrnam', return_value=mock_grp,
+        ):
+            self.assertFalse(agent.logs_need_install)
+
+            # Wrong group requires fix
+            mock_stat_res.st_gid = 0
+            self.assertTrue(agent.logs_need_install)
+
+            # Wrong mode (e.g. world-writable 0666 or 0644) requires fix
+            mock_stat_res.st_gid = 61
+            mock_stat_res.st_mode = 0o100666
+            self.assertTrue(agent.logs_need_install)
 
     def test_plist_needs_install(self):
         """Verifies plist_needs_install checks file existence, content matching, ownership, and mode."""
