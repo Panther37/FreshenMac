@@ -1,11 +1,22 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from freshenmac.homebrew import HomeBrew
+from freshenmac.homebrew import BrewBottles, BrewOutdated, HomeBrew
 from freshenmac.util import Logger, parse_version
 from freshenmac.xcode import Xcode
+
+
+def _attach_stdout_lines(mock: MagicMock) -> MagicMock:
+    """Attaches stdout-backed __iter__ and splitlines(clean=...) to a MagicMock RunCMD."""
+    mock.__iter__.side_effect = lambda: iter(mock.stdout.splitlines())
+    mock.splitlines.side_effect = (
+        lambda clean=False: [line for x in mock.stdout.splitlines() if (line := x.strip())]
+        if clean else mock.stdout.splitlines()
+    )
+    return mock
 
 
 class TestHomeBrew(unittest.TestCase):
@@ -16,6 +27,77 @@ class TestHomeBrew(unittest.TestCase):
     CMake-dependent build handling, license detection and retry loops,
     Git rebase auto-recovery, and cask / formula upgrading.
     """
+
+    def test_brew_bottles_compute_summary(self):
+        """Verifies BrewBottles.compute_summary returns Updated, Unchanged, and Installed mappings."""
+        start = {'pkg1': '1.0', 'pkg2': '2.0', 'cask1': '1.0', 'vanished': '4.0'}
+        end = {'pkg1': '1.1', 'pkg2': '2.0', 'cask1': '1.0', 'newpkg': '3.0', 'untracked': '1.2'}
+        attempted_updates = ['pkg1', 'pkg2', 'missing', 'vanished', 'untracked']
+        attempted_installs = ['newpkg', 'cask1']
+
+        summary = BrewBottles.compute_summary(start, end, attempted_updates, attempted_installs)
+        self.assertEqual(summary['Updated'], {'pkg1': '1.0 ═▷ 1.1'})
+        self.assertEqual(summary['Unchanged'], {'pkg2': '2.0', 'vanished': '4.0 (missing)', 'cask1': '1.0'})
+        self.assertEqual(summary['Installed'], {'untracked': '1.2', 'newpkg': '3.0'})
+
+    def test_brew_bottles_from_cmd_and_snapshot(self):
+        """Verifies BrewBottles parses brew list output, resolves latest version, and generates snapshots."""
+        raw_output = "curl 8.1.0 8.2.0\nvlc 3.0.18\nsingle_pkg\n"
+        bottles = BrewBottles.from_cmd(raw_output)
+
+        self.assertIn('curl', bottles)
+        self.assertIn('vlc', bottles)
+        self.assertIn('single_pkg', bottles)
+        self.assertNotIn('unknown', bottles)
+
+        self.assertEqual(str(bottles.latest_version('curl')), '8.2.0')
+        self.assertIsNone(bottles.latest_version('unknown'))
+
+        snap = bottles.snapshot()
+        self.assertEqual(snap['curl'], '8.2.0')
+        self.assertEqual(snap['vlc'], '3.0.18')
+        self.assertEqual(snap['single_pkg'], 'installed')
+
+        bottles.mark_installed('newly_added', '1.5')
+        self.assertEqual(str(bottles.latest_version('newly_added')), '1.5')
+        self.assertTrue(bottles.loaded)
+
+    def test_brew_bottles_never_none(self):
+        """Verifies HomeBrew._bottles stays a BrewBottles instance and tracks initialization state."""
+        brew = HomeBrew(is_arm=True, dry_run=True)
+        self.assertIsInstance(brew._bottles, BrewBottles)
+        self.assertFalse(brew._bottles.loaded)
+
+        custom = {'pkg': [parse_version('1.0')]}
+        brew.brew_list = custom
+        self.assertTrue(brew._bottles.loaded)
+        self.assertIs(brew.bottles.installed, custom)
+
+        del brew.brew_list
+        self.assertIsInstance(brew._bottles, BrewBottles)
+        self.assertFalse(brew._bottles.loaded)
+        self.assertEqual(brew._bottles.installed, {})
+
+    def test_brew_outdated_mapping_and_properties(self):
+        """Verifies BrewOutdated dict compatibility, properties, and helper methods."""
+        outdated = BrewOutdated(
+            casks={'vlc': '3.0.18 ═▷ 3.0.19'},
+            formulae={'curl': '8.1.0 ═▷ 8.2.0'},
+            success=True,
+        )
+        self.assertTrue(outdated.has_updates)
+        self.assertFalse(outdated.is_empty)
+        self.assertIn('casks', outdated)
+        self.assertIn('formulae', outdated)
+        self.assertNotIn('unknown', outdated)
+        self.assertEqual(outdated['casks']['vlc'], '3.0.18 ═▷ 3.0.19')
+        self.assertEqual(outdated.get('formulae')['curl'], '8.1.0 ═▷ 8.2.0')
+        self.assertIsNone(outdated.get('nonexistent'))
+
+        empty = BrewOutdated(True)
+        self.assertFalse(empty.has_updates)
+        self.assertTrue(empty.is_empty)
+        self.assertEqual(empty.to_dict(), {'casks': {}, 'formulae': {}})
 
     def test_brew_path_resolution(self):
         """Verifies Homebrew binary path discovery for Apple Silicon and Intel."""
@@ -65,8 +147,29 @@ class TestHomeBrew(unittest.TestCase):
         # Assert
         self.assertEqual(
             opts,
-            {'cancelable': True, 'debug': 1, 'debug_limit': 0, 'taskpolicy': 'utility', 'timeout': 1200},
+            {
+                'cancelable': True,
+                'cwd':        Path('/'),
+                'debug':      1,
+                'debug_limit': 0,
+                'environ':    brew.environ,
+                'taskpolicy': 'utility',
+                'timeout':    1200,
+            },
         )
+
+    def test_configure_environment_uses_is_arm_without_mutating_os_environ(self):
+        """Verifies HomeBrew.environ sets architecture-specific PATH and flags without modifying os.environ."""
+        with patch.dict('freshenmac.homebrew.os.environ', {'PATH': '/usr/bin:/bin'}, clear=True):
+            arm_brew = HomeBrew(is_arm=True, dry_run=True)
+            self.assertEqual(arm_brew.environ['PATH'], '/opt/homebrew/bin:/usr/bin:/bin')
+            self.assertEqual(arm_brew.environ['HOMEBREW_NO_ASK'], '1')
+            self.assertEqual(arm_brew.environ['HOMEBREW_NO_ENV_HINTS'], '1')
+
+            intel_brew = HomeBrew(is_arm=False, dry_run=True)
+            self.assertEqual(intel_brew.environ['PATH'], '/usr/local/bin:/usr/bin:/bin')
+            self.assertEqual(os.environ['PATH'], '/usr/bin:/bin')
+            self.assertNotIn('HOMEBREW_NO_ASK', os.environ)
 
     def test_fix_lazy_initialization(self):
         """Verifies self._fix initializes as None and fixer creates RecoveryEngine only once on demand."""
@@ -107,6 +210,7 @@ class TestHomeBrew(unittest.TestCase):
                 mock.stdout = "==> Upgrading vlc"
             mock.stderr = ""
             mock.std_all = mock.stdout
+            _attach_stdout_lines(mock)
             mock.__bool__.return_value = True
             return mock
 
@@ -168,11 +272,6 @@ class TestHomeBrew(unittest.TestCase):
             # Assert: filters only packages needing cmake
             self.assertEqual(res, ['cmake_pkg', 'dep_cmake'])
 
-    def test_get_log_path(self):
-        """Verifies _get_log_path returns empty Path for empty or non-existent package logs."""
-        self.assertEqual(HomeBrew._get_log_path(''), Path())
-        self.assertEqual(HomeBrew._get_log_path('nonexistent_package_12345'), Path())
-
     def test_get_outdated_formulae(self):
         """Verifies _get_outdated parses brew outdated JSON and excludes pinned packages."""
         # Arrange
@@ -211,13 +310,10 @@ class TestHomeBrew(unittest.TestCase):
         self.assertTrue(HomeBrew(is_arm=True).is_arm)
         self.assertFalse(HomeBrew(is_arm=False).is_arm)
 
-    def test_logger_default_initialization(self):
-        """Verifies HomeBrew initializes default Logger instance when none is passed."""
-        brew = HomeBrew(is_arm=True, dry_run=True)
-        self.assertIsInstance(brew.logger, Logger)
-
     def test_logger_integration(self):
-        """Verifies HomeBrew delegates log messages to provided custom Logger instance."""
+        """Verifies HomeBrew initializes default Logger and delegates to custom Logger instance."""
+        self.assertIsInstance(HomeBrew(is_arm=True, dry_run=True).logger, Logger)
+
         # Arrange
         mock_logger = MagicMock()
         brew = HomeBrew(is_arm=True, dry_run=True, logger=mock_logger)
@@ -235,22 +331,34 @@ class TestHomeBrew(unittest.TestCase):
             self.assertEqual(call_args[1].get('component'), 'Homebrew')
 
     def test_parse_outdated_invalid_keys(self):
-        """Verifies _parse_outdated logs and returns empty list when expected keys are missing."""
+        """Verifies _parse_outdated logs and returns BrewOutdated failure when expected keys are missing."""
         brew = HomeBrew(is_arm=True, dry_run=True)
         res = brew._parse_outdated(json.dumps({'unknown': []}))
-        self.assertEqual(res, [])
+        self.assertFalse(res.success)
+        self.assertEqual(res.issue, 'MissingKeys')
+        self.assertEqual(res.casks, {})
+        self.assertEqual(res.formulae, {})
 
     def test_read_outdated_error_handling(self):
-        """Verifies _read_outdated returns empty cask and formula lists on command failure or invalid JSON."""
+        """Verifies _read_outdated returns BrewOutdated failure on command failure or invalid JSON."""
         brew = HomeBrew(is_arm=True, dry_run=True)
         with patch('freshenmac.homebrew.RunCMD') as mock_cmd:
             mock_cmd.return_value.stdout = "invalid json"
+            mock_cmd.return_value.returncode = 0
             res = brew._read_outdated()
-            self.assertEqual(res, {'casks': [], 'formulae': []})
+            self.assertFalse(res.success)
+            self.assertEqual(res.issue, 'JSONDecodeError')
+            self.assertEqual(res.casks, {})
+            self.assertEqual(res.formulae, {})
 
             mock_cmd.return_value.stdout = ""
+            mock_cmd.return_value.returncode = 1
+            mock_cmd.return_value.error = "Error: command failed"
             res_empty = brew._read_outdated()
-            self.assertEqual(res_empty, {'casks': [], 'formulae': []})
+            self.assertFalse(res_empty.success)
+            self.assertEqual(res_empty.issue, 'CommandFailed')
+            self.assertEqual(res_empty.casks, {})
+            self.assertEqual(res_empty.formulae, {})
 
     def test_read_outdated_skips_identical_and_newer_versions(self):
         """Verifies _read_outdated filters out identical or newer versions reported by brew."""
@@ -355,7 +463,7 @@ class TestHomeBrew(unittest.TestCase):
         # 'pkg_installed_current': installed & up-to-date
         # 'pkg_installed_outdated': installed & outdated
         # 'pkg_missing': not installed
-        brew.__dict__['brew_list'] = {
+        brew.brew_list = {
             'pkg_installed_current':  [parse_version('1.0')],
             'pkg_installed_outdated': [parse_version('1.0')],
         }
@@ -378,6 +486,7 @@ class TestHomeBrew(unittest.TestCase):
                 mock.stdout = ""
             mock.stderr = ""
             mock.std_all = mock.stdout
+            _attach_stdout_lines(mock)
             mock.__bool__.return_value = True
             return mock
 
@@ -390,9 +499,13 @@ class TestHomeBrew(unittest.TestCase):
         ):
 
             # Act
-            brew._resolve_and_update_dependencies('test_formula', outdated_dict)
+            success = brew._resolve_and_update_dependencies('test_formula', outdated_dict)
 
-            # Assert: missing package installed
+            # Assert: missing package installed, outdated upgraded, brew_list updated in place
+            self.assertTrue(success)
+            self.assertTrue(brew._bottles.loaded)
+            self.assertEqual(str(brew.brew_list['pkg_installed_outdated'][0]), '2.0')
+            self.assertEqual(str(brew.brew_list['pkg_missing'][0]), 'installed')
             self.assertTrue(any(all(['install' in c, 'pkg_missing' in c]) for c in executed_cmds))
             # Outdated package upgraded
             self.assertTrue(any(all(['upgrade' in c, 'pkg_installed_outdated' in c]) for c in executed_cmds))
@@ -474,7 +587,7 @@ class TestHomeBrew(unittest.TestCase):
         )
         self.assertEqual(HomeBrew._truncate_lines(eight_lines), expected_8)
 
-        # 10 lines: keeps first 3, last 3, and indicates 4 lines omitted
+        # 10 lines: keeps first 3, last 3, and indicates 4 lines omitted (also via _warning)
         ten_lines = "\n".join(f"line {i}" for i in range(1, 11))
         expected_10 = (
             "line 1\nline 2\nline 3\n"
@@ -483,20 +596,13 @@ class TestHomeBrew(unittest.TestCase):
         )
         self.assertEqual(HomeBrew._truncate_lines(ten_lines), expected_10)
 
-    def test_warning_truncates_long_error_output(self):
-        """Verifies _warning truncates error messages exceeding 7 lines."""
         brew = HomeBrew(is_arm=True, dry_run=False)
-        ten_lines = "\n".join(f"error line {i}" for i in range(1, 11))
         with patch.object(brew, 'log') as mock_log:
             brew._warning('upgrade', 'pkg', 1, ten_lines)
             mock_log.assert_called_once()
             log_msg = mock_log.call_args[0][0]
-            self.assertIn("... (4 lines omitted) ...", log_msg)
-            self.assertIn("error line 1", log_msg)
-            self.assertIn("error line 3", log_msg)
-            self.assertNotIn("error line 5", log_msg)
-            self.assertIn("error line 8", log_msg)
-            self.assertIn("error line 10", log_msg)
+            self.assertIn(expected_10, log_msg)
+            self.assertNotIn("line 5", log_msg)
 
     def test_upgrade_casks_warning_includes_cask_name(self):
         """Verifies _upgrade_casks includes the cask name in warning on failure."""
@@ -546,11 +652,31 @@ class TestHomeBrew(unittest.TestCase):
         mock_upgrade.__bool__.return_value = True
 
         with patch('freshenmac.homebrew.RunCMD', side_effect=[mock_check, mock_upgrade]) as mock_run:
+            mock_run.can_sudo.return_value = False
             result = brew.self_update_freshenmac()
             self.assertTrue(result)
             self.assertTrue(brew.updates_performed)
             upgrade_call = mock_run.call_args_list[1][0][0]
             self.assertEqual(upgrade_call, [str(brew.brew_path), 'upgrade', '--yes', '--cask', 'freshenmac'])
+
+    def test_self_update_freshenmac_runs_install_with_sudo(self):
+        """Verifies self_update_freshenmac runs --action Install on the new binary when sudo is validated."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        mock_upgrade = MagicMock()
+        mock_upgrade.__bool__.return_value = True
+        mock_install = MagicMock()
+        mock_install.__bool__.return_value = True
+
+        with patch('freshenmac.homebrew.RunCMD', side_effect=[mock_upgrade, mock_install]) as mock_run, patch(
+            'freshenmac.homebrew.plist.LaunchAgent',
+        ) as mock_agent_cls, patch.object(Path, 'is_file', return_value=True):
+            mock_run.can_sudo.return_value = True
+            mock_agent_cls.return_value.target_script = Path('/fake/bin/freshenmac')
+            result = brew.self_update_freshenmac('2.1.1 ═▷ 2.2.0')
+            self.assertTrue(result)
+            self.assertEqual(mock_run.call_count, 2)
+            install_call = mock_run.call_args_list[1][0][0]
+            self.assertEqual(install_call[1:], ['/fake/bin/freshenmac', '--action', 'Install'])
 
     def test_self_update_freshenmac_with_preparsed_version(self):
         """Verifies self_update_freshenmac skips querying outdated when version string is provided."""
@@ -559,6 +685,7 @@ class TestHomeBrew(unittest.TestCase):
         mock_upgrade.__bool__.return_value = True
 
         with patch('freshenmac.homebrew.RunCMD', return_value=mock_upgrade) as mock_run:
+            mock_run.can_sudo.return_value = False
             result = brew.self_update_freshenmac('1.1.1 ═▷ 1.5.0')
             self.assertTrue(result)
             self.assertTrue(brew.updates_performed)
@@ -568,7 +695,7 @@ class TestHomeBrew(unittest.TestCase):
     def test_resolve_and_update_dependencies_failure_short_circuits(self):
         """Verifies failed dependency stops formula upgrade and skips parent build."""
         brew = HomeBrew(is_arm=True, dry_run=False)
-        brew.__dict__['brew_list'] = {}
+        brew.brew_list = {}
 
         def fake_runcmd(cmd, *args, **kwargs):
             cmd_list = list(cmd)
@@ -589,6 +716,7 @@ class TestHomeBrew(unittest.TestCase):
                 mock.returncode = 0
                 mock.__bool__.return_value = True
             mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
+            _attach_stdout_lines(mock)
             return mock
 
         with patch(
@@ -625,6 +753,46 @@ class TestHomeBrew(unittest.TestCase):
             with patch('freshenmac.homebrew.RunCMD', side_effect=tracking_cmake_runcmd):
                 brew._upgrade_cmake_formulae(['parent_formula'], {'parent_formula': '1.0 ═▷ 2.0'})
                 self.assertFalse(any('parent_formula' in c and 'upgrade' in c for c in executed_cmake_cmds))
+
+    def test_resolve_and_update_dependencies_recovers_or_aborts_on_deps_failure(self):
+        """Verifies _resolve_and_update_dependencies invokes fixer on failure and ignores partial stdout."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        brew.brew_list = {}
+
+        # Case 1: unrecoverable brew deps failure (even with partial stdout) logs warning and returns False
+        fail_cmd = MagicMock()
+        fail_cmd.__bool__.return_value = False
+        fail_cmd.returncode = 1
+        fail_cmd.stdout = 'partial_dep\n'
+        fail_cmd.stderr = 'Error: No available formula'
+        fail_cmd.std_all = 'partial_dep\nError: No available formula'
+        fail_cmd.__iter__.side_effect = lambda: iter(fail_cmd.stdout.splitlines())
+
+        with patch('freshenmac.homebrew.RunCMD', return_value=fail_cmd) as mock_run, patch.object(
+            brew.fixer, 'recover', return_value=None,
+        ) as mock_recover, patch.object(brew, '_warning') as mock_warn:
+            res = brew._resolve_and_update_dependencies('broken_formula')
+            self.assertFalse(res)
+            self.assertEqual(mock_run.call_count, 1)
+            mock_recover.assert_called_once()
+            mock_warn.assert_called_once_with('deps', 'broken_formula', 1, 'Error: No available formula')
+
+        # Case 2: recoverable brew deps failure retries via fixer and proceeds
+        recovered_cmd = MagicMock()
+        recovered_cmd.__bool__.return_value = True
+        recovered_cmd.returncode = 0
+        recovered_cmd.stdout = ''
+        recovered_cmd.stderr = ''
+        recovered_cmd.__iter__.side_effect = lambda: iter([])
+        recovered_cmd.splitlines.return_value = []
+
+        with patch('freshenmac.homebrew.RunCMD', return_value=fail_cmd), patch.object(
+            brew.fixer, 'recover', return_value=recovered_cmd,
+        ) as mock_recover, patch.object(brew, '_warning') as mock_warn:
+            res = brew._resolve_and_update_dependencies('fixed_formula')
+            self.assertTrue(res)
+            mock_recover.assert_called_once()
+            mock_warn.assert_not_called()
 
     def test_update_brew_dry_run(self):
         """Verifies update performs no subprocess commands when dry_run is True."""
@@ -680,6 +848,7 @@ class TestHomeBrew(unittest.TestCase):
                     mock.__bool__.return_value = True
                     mock.stdout = '==> Upgrading qemu'
             mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
+            _attach_stdout_lines(mock)
             return mock
 
         with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd):
@@ -728,6 +897,7 @@ class TestHomeBrew(unittest.TestCase):
                     mock.__bool__.return_value = True
                     mock.stdout = '==> Upgrading qtbase'
             mock.std_all = '\n'.join([mock.stdout, mock.stderr]).strip()
+            _attach_stdout_lines(mock)
             return mock
 
         with patch(
@@ -886,35 +1056,8 @@ class TestHomeBrew(unittest.TestCase):
             except KeyboardInterrupt:
                 self.fail("KeyboardInterrupt was not caught and skipped cleanly in upgrade methods")
 
-    def test_resolve_and_update_dependencies_updates_brew_list_in_place(self):
-        """Verifies _resolve_and_update_dependencies updates cached brew_list in place."""
-        brew = HomeBrew(is_arm=True, dry_run=False)
-        brew.__dict__['brew_list'] = {
-            'outdated_dep': [parse_version('1.0')],
-        }
-
-        def fake_runcmd(cmd, *args, **kwargs):
-            mock = MagicMock()
-            mock.returncode = 0
-            cmd_list = list(cmd)
-            if 'deps' in cmd_list:
-                mock.stdout = 'outdated_dep\n'
-            else:
-                mock.stdout = '==> Upgrading outdated_dep'
-            mock.stderr = ''
-            mock.std_all = mock.stdout
-            mock.__contains__.side_effect = lambda item: item in mock.stdout
-            return mock
-
-        with patch('freshenmac.homebrew.RunCMD', side_effect=fake_runcmd):
-            outdated = {'outdated_dep': '1.0 ═▷ 2.0'}
-            success = brew._resolve_and_update_dependencies('parent_pkg', outdated)
-            self.assertTrue(success)
-            self.assertIn('brew_list', brew.__dict__)
-            self.assertEqual(str(brew.brew_list['outdated_dep'][0]), '2.0')
-
     def test_snapshot_installed_single_call(self):
-        """Verifies snapshot_installed executes only brew list --versions and warms cached brew_list."""
+        """Verifies snapshot_installed executes only brew list --versions and initializes BrewBottles."""
         brew = HomeBrew(is_arm=True, dry_run=False)
         executed_cmds = []
 
@@ -931,6 +1074,7 @@ class TestHomeBrew(unittest.TestCase):
             snapshots = brew.snapshot_installed()
             self.assertEqual(len(executed_cmds), 1)
             self.assertNotIn('--cask', executed_cmds[0])
+            self.assertTrue(brew._bottles.loaded)
             self.assertEqual(snapshots['pkg1'], '1.0')
             self.assertEqual(snapshots['cask1'], '3.0')
             # brew_list was populated and does not invoke RunCMD a second time
@@ -963,6 +1107,38 @@ class TestHomeBrew(unittest.TestCase):
             # Calling _upgrade_cmake_formulae also skips it without executing upgrade
             brew._upgrade_cmake_formulae(['already_upgraded'], outdated)
             self.assertFalse(any('already_upgraded' in c for c in executed_cmds))
+
+    def test_validate_updates_checks_target_versions_and_missing(self):
+        """Verifies _validate_updates flags packages missing or below target version and clears stale updated flag."""
+        brew = HomeBrew(is_arm=True, dry_run=False)
+        brew.summary_results['updated']['freshenmac'] = '2.1.1 ═▷ 2.2.0'
+
+        expected = {
+            'pkg_ok':     '1.0 ═▷ 1.1',
+            'pkg_part':   '1.0 ═▷ 2.0',
+            'pkg_miss':   '1.0 ═▷ 1.2',
+            'freshenmac': '2.1.1 ═▷ 2.2.0',
+        }
+        start = {'pkg_ok': '1.0', 'pkg_part': '1.0', 'pkg_miss': '1.0', 'freshenmac': '2.1.1'}
+        end = {'pkg_ok': '1.1', 'pkg_part': '1.5', 'freshenmac': '2.1.1'}
+
+        with patch.object(brew, 'log') as mock_log:
+            unverified = brew._validate_updates(expected, start, end)
+
+        self.assertEqual(
+            unverified,
+            ['pkg_part (1.5 < 2.0)', 'pkg_miss (missing)', 'freshenmac (2.1.1 < 2.2.0)'],
+        )
+        self.assertEqual(brew.summary_results['unchanged']['pkg_miss'], '1.0 (missing)')
+        self.assertEqual(brew.summary_results['unchanged']['freshenmac'], '2.1.1')
+        self.assertNotIn('freshenmac', brew.summary_results['updated'])
+        self.assertTrue(any('not verified updated' in call.args[0] for call in mock_log.call_args_list))
+
+        brew2 = HomeBrew(is_arm=True, dry_run=False)
+        with patch.object(brew2, 'log') as mock_log2:
+            ok_res = brew2._validate_updates({'pkg_ok': '1.0 ═▷ 1.1'}, {'pkg_ok': '1.0'}, {'pkg_ok': '1.1'})
+        self.assertEqual(ok_res, [])
+        self.assertTrue(any('Verified all 1 expected Homebrew update(s) updated.' in call.args[0] for call in mock_log2.call_args_list))
 
     def test_xcode_property(self):
         """Verifies xcode property creates and caches an Xcode instance with matching settings."""

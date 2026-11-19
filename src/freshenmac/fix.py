@@ -16,7 +16,7 @@ from typing import Any
 from freshenmac.util import Logger, RunCMD, Wave
 
 DEFAULT_BACKOFF: int = 10
-FILE_BUILD = 20261109
+FILE_BUILD = 20261118
 MAX_RECOVERY_ATTEMPTS: int = 1
 PATTERN: dict[str, re.Pattern[str]] = {
     'Brew Link Conflict':   re.compile(
@@ -72,6 +72,18 @@ class FailureInfo:
     stdout: str = ''  # .             RunCMD.stdout
     subsystem: str = ''  # .          Originating module/subsystem (e.g. 'Homebrew', 'MAS', 'SoftwareUpdate')
 
+    @staticmethod
+    def _get_log_path(package: str, subsystem: str = '') -> Path:
+        """Discovers the most recent Homebrew build log path for the specified package."""
+        if not package or (subsystem and subsystem != 'Homebrew'):
+            return Path()
+
+        log_dir = Path.home() / 'Library' / 'Logs' / 'Homebrew' / package
+        if not log_dir.is_dir():
+            return Path()
+
+        return max(log_dir.glob('*.log'), key=lambda p: p.stat().st_mtime, default=Path())
+
     def combined_output(self) -> str:
         """Combines stdout, stderr, and the trailing lines of log_file into a single string."""
         parts: list[str] = []
@@ -95,14 +107,15 @@ class FailureInfo:
         cls,
         cmd: RunCMD,
         *,
-        log_file: Path = Path(),
+        log_file: Path | None = None,
         package: str = '',
         subsystem: str = '',
     ) -> FailureInfo:
         """Constructs an immutable FailureInfo from an executed RunCMD instance."""
+        resolved_log = cls._get_log_path(package, subsystem) if log_file is None else log_file
         return cls(
             cmd_args=tuple(cmd.cmd_args),
-            log_file=log_file,
+            log_file=resolved_log,
             package=package,
             returncode=cmd.returncode,
             stderr=cmd.stderr,

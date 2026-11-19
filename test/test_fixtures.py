@@ -68,8 +68,8 @@ class TestFixtures(unittest.TestCase):
         self.assertIn('--include-build was passed', sim.stderr)
 
         deps = [
-            line.strip() for line in sim.stdout.splitlines()
-            if line.strip() and not line.startswith(('Warning:', 'Hide these hints', 'This means'))
+            line for line in sim.splitlines(clean=True)
+            if not line.startswith(('Warning:', 'Hide these hints', 'This means'))
         ]
         self.assertEqual(len(deps), 46)
         self.assertIn('cmake', deps)

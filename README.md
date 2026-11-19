@@ -5,7 +5,7 @@ A friendly tool that automatically keeps macOS, Homebrew, and App Store apps upd
 [![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey.svg)](https://apple.com/macos)
 [![Python](https://img.shields.io/badge/python-3.9%2B%20%7C%203.15-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-367%20passed-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-375%20passed-brightgreen.svg)](#running-tests)
 
 ---
 
@@ -25,11 +25,13 @@ When the Mac is truly idle, it politely restarts the computer.
 
 ## What It Does
 
-- **Homebrew:** Updates tools and apps, and removes old files. Automatically detects and heals interrupted git rebases
-  or dirty tap repositories. Checks and updates formula dependencies before attempting upgrades, short-circuiting build
-  attempts if a dependency fails. For long error outputs, truncates verbose build logs cleanly (keeping the first 3 and
-  last 3 lines). Some packages on Intel Macs need to build from source code using CMake; FreshenMac checks for Xcode
-  build tools first and updates those packages individually so nothing gets blocked.
+- **Homebrew:** Updates tools and apps, and removes old files. Distinguishes genuine "up to date" status from failed or
+  malformed `brew outdated` queries and verifies target updates against before/after package snapshots. Automatically
+  detects and heals interrupted git rebases or dirty tap repositories. Checks and updates formula dependencies before
+  attempting upgrades, short-circuiting build attempts if a dependency fails. For long error outputs, truncates verbose
+  build logs cleanly (keeping the first 3 and last 3 lines). Some packages on Intel Macs need to build from source code
+  using CMake; FreshenMac checks for Xcode build tools first and updates those packages individually so nothing gets
+  blocked.
 - **App Store:** Updates your Mac App Store apps using `mas`. If an app is open, FreshenMac waits to update it so you do
   not lose any work. It cleanly schedules an update for that app the next time you log in, without triggering an
   unnecessary system reboot prompt. You can also ignore apps by name or ID number.
@@ -85,8 +87,8 @@ brew upgrade --cask freshenmac
       ```bash
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       ```
-    - When tapping third-party repositories, Homebrew may ask to confirm trust (`[y/N]`). Type `y` to confirm, or grant trust manually using
-      `brew trust panther37/tap`.
+    - When tapping third-party repositories, Homebrew may ask to confirm trust (`[y/N]`). Type `y` to confirm, or grant
+      trust manually using `brew trust panther37/tap`.
 - **App Store CLI:** (optional) [`mas`](https://github.com/mas-cli/mas)
     - If Homebrew is on your Mac, FreshenMac installs `mas` for you automatically.
 
@@ -155,12 +157,13 @@ freshenmac --schedule
 
 This configures a system-wide background service and unattended maintenance configuration:
 
-- **Command-Line Tool:** Installs the `freshenmac` command directly into your Homebrew path (`/opt/homebrew/bin/freshenmac` on Apple Silicon or
-  `/usr/local/bin/freshenmac` on Intel).
-- **Background Maintenance Service (`LaunchAgent`):** Automatically installs and activates `/Library/LaunchAgents/com.panther37.FreshenMac.plist` to
-  run unattended maintenance every Sunday at 2:00 AM (or on your custom schedule).
-- **Unattended Sudo Privileges:** Sets up `/etc/sudoers.d/freshenmac` so scheduled background runs can perform system and software updates without
-  prompting for passwords.
+- **Command-Line Tool:** Installs the `freshenmac` command directly into your Homebrew path
+  (`/opt/homebrew/bin/freshenmac` on Apple Silicon or `/usr/local/bin/freshenmac` on Intel).
+- **Background Maintenance Service (`LaunchAgent`):** Automatically installs and activates
+  `/Library/LaunchAgents/com.panther37.FreshenMac.plist` to run unattended maintenance every Sunday at 2:00 AM (or on
+  your custom schedule).
+- **Unattended Sudo Privileges:** Sets up `/etc/sudoers.d/freshenmac` so scheduled background runs can perform system
+  and software updates without prompting for passwords.
 
 To install or remove the scheduled service:
 
@@ -261,8 +264,14 @@ flowchart TD
 - `freshenmac/computer.py`: Coordinates the update run. Checks hardware details, uptime, and idle time. Prints the final
   summary report.
 - `freshenmac/homebrew.py`: Updates Homebrew tools and apps using a single-pass query (`brew outdated --json=v2`) for
-  formulae and casks. Checks dependency prerequisites before builds, truncates long error outputs, handles source code
-  builds on Intel Macs, and cleans up old files. Filters reboot triggers strictly to system restarts.
+  formulae and casks. Uses `BrewBottles` for lazy-loaded `brew list --versions` inventory, in-place dependency cache
+  updates, and start/end snapshot diffing (`compute_summary`), alongside tri-state `BrewOutdated` telemetry that
+  separates updates available, up-to-date runs, and command/JSON failures. Checks dependency prerequisites before
+  builds, truncates long error outputs, handles source code builds on Intel Macs, scopes `PATH`/Homebrew env vars per
+  subprocess, and cleans up old files. Filters reboot triggers strictly to system restarts.
+- `freshenmac/fix.py`: Autonomous diagnostic and self-healing recovery engine (`RecoveryEngine`, `FailureInfo`,
+  `rules_homebrew`) that auto-discovers recent Homebrew build logs (`FailureInfo._get_log_path()`) and remediates
+  transient network, rebase, link conflict, Python mismatch, and Xcode license errors.
 - `freshenmac/mas.py`: Updates Mac App Store apps using `mas`. Checks for running apps with `util.is_app_running` so it
   does not interrupt your work, deferring them via `StartupRun` without triggering false reboots.
 - `freshenmac/softwareupdate.py`: Downloads and installs Apple software and macOS updates (including Safari and
@@ -277,17 +286,19 @@ flowchart TD
       `/etc/sudoers.d/freshenmac` for unattended maintenance.
     - `StartupRun`: Creates a one-time login task to finish updating apps that were open during the main run.
     - `SavePreferences` and `load_preferences`: Reads and saves system-wide preferences in `/Library/Preferences/`.
-    - `CronSchedule`: Encapsulates calendar intervals and parses 5-part cron syntax or launchd dictionaries into Cartesian intervals.
+    - `CronSchedule`: Encapsulates calendar intervals and parses 5-part cron syntax or launchd dictionaries into
+      Cartesian intervals.
 - `freshenmac/config.py`: Stores default settings, timeouts, file paths, and rules.
 - `freshenmac/util.py`: Helper tools: runs shell commands (`RunCMD`), executes AppleScript (`RunAppleScript`), detects
-  active applications (`is_app_running`), handles safe string joining (`str_join`), parses natural version numbers (`Version`), manages masked user
-  authentication credentials (`TortimerCreds`), keeps administrator permissions active (`SudoKeepAlive`), and draws the progress spinner (`Wave`).
+  active applications (`is_app_running`), handles safe string joining (`str_join`), parses natural version numbers
+  (`Version`), manages masked user authentication credentials (`TortimerCreds`), keeps administrator permissions active
+  (`SudoKeepAlive`), and draws the progress spinner (`Wave`).
 
 ---
 
 ## Running Tests
 
-FreshenMac has 370 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
+FreshenMac has 375 automated tests (requires **Python 3.10+**; the runtime package itself supports **Python 3.9+**).
 These tests verify that everything works correctly and that code follows strict project rules (like keeping classes,
 methods, constants, and imports in alphabetical order):
 

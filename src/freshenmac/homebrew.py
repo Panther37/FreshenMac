@@ -4,6 +4,8 @@ import json
 import os
 import re
 import shutil
+import sys
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -14,8 +16,8 @@ from freshenmac.config import APP_INFO, DEFAULTS, TIMEOUT
 from freshenmac.util import Logger, RunCMD, Version, parse_version
 from freshenmac.xcode import Xcode
 
-FILE_BUILD = 20261110
-
+FILE_BUILD = 20261118
+NEW_INSTALL = 'New Install'
 PATTERN: dict[str, re.Pattern[str]] = {
     'Content Length': re.compile(r"content-length:\s*(?P<length>\d+)", re.IGNORECASE),
     'Intel Warning':  re.compile(
@@ -33,6 +35,155 @@ PATTERN: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
 }
+
+
+@dataclass
+class BrewBottles:
+    """
+    Manages installed Homebrew packages, version lookups, and upgrade lifecycle snapshots.
+    """
+    installed: dict[str, list[Version]] = field(default_factory=dict)
+    loaded: bool = False
+
+    def __contains__(self, pkg: str) -> bool:
+        return pkg in self.installed
+
+    def __getitem__(self, pkg: str) -> list[Version]:
+        return self.installed[pkg]
+
+    @staticmethod
+    def compute_summary(
+        snapshot_start: dict[str, str],
+        snapshot_end: dict[str, str],
+        attempted_updates: list[str],
+        attempted_installs: list[str],
+        arrow: str = DEFAULTS['Arrow'],
+    ) -> dict[str, dict[str, str]]:
+        """
+        Computes updated, unchanged, and newly installed version mappings between snapshots.
+        :return: Dictionary mapping 'Installed', 'Unchanged', and 'Updated' to package version dicts.
+        """
+        results: dict[str, dict[str, str]] = {
+            'Installed': {},
+            'Unchanged': {},
+            'Updated':   {},
+        }
+
+        for a_pkg in attempted_updates:
+            start_ver = snapshot_start.get(a_pkg, '')
+            end_ver = snapshot_end.get(a_pkg, '')
+            if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
+                results['Updated'][a_pkg] = f"{start_ver} {arrow} {end_ver}"
+            elif start_ver and a_pkg not in snapshot_end:
+                results['Unchanged'][a_pkg] = f"{start_ver} (missing)"
+            elif start_ver:
+                results['Unchanged'][a_pkg] = start_ver
+            elif end_ver:
+                results['Installed'][a_pkg] = end_ver
+
+        for a_pkg in attempted_installs:
+            end_ver = snapshot_end.get(a_pkg, 'installed')
+            if a_pkg not in snapshot_start:
+                results['Installed'][a_pkg] = end_ver
+            else:
+                start_ver = snapshot_start.get(a_pkg, '')
+                if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
+                    results['Updated'][a_pkg] = f"{start_ver} {arrow} {end_ver}"
+                else:
+                    results['Unchanged'][a_pkg] = end_ver
+
+        return results
+
+    @classmethod
+    def from_cmd(cls, cmd_output: str | RunCMD) -> BrewBottles:
+        """Parses `brew list --versions` output into a BrewBottles inventory."""
+        installed: dict[str, list[Version]] = {}
+        for line in cmd_output.splitlines():
+            parts = line.strip().split()
+            if not parts:
+                continue
+
+            if len(parts) > 1:
+                installed[parts[0]] = [parse_version(v) for v in parts[1:]]
+            else:
+                installed[parts[0]] = [parse_version('installed')]
+
+        return cls(installed=installed, loaded=True)
+
+    def get(self, pkg: str, default: Any = None) -> Any:
+        return self.installed.get(pkg, default)
+
+    def latest_version(self, pkg: str) -> Version | None:
+        """Returns the highest installed Version for package, or None if uninstalled."""
+        versions = self.installed.get(pkg)
+        if not versions:
+            return None
+
+        return max(versions)
+
+    def mark_installed(self, pkg: str, ver: str | Version = 'installed') -> None:
+        """Registers or updates a package as installed with the given version."""
+        v = ver if isinstance(ver, Version) else parse_version(str(ver))
+        self.installed[pkg] = [v]
+
+    def snapshot(self) -> dict[str, str]:
+        """Returns mapping of package names to their primary installed version string."""
+        res: dict[str, str] = {}
+        for k, versions in self.installed.items():
+            if versions:
+                res[k] = str(max(versions))
+            else:
+                res[k] = 'installed'
+
+        return res
+
+
+@dataclass
+class BrewOutdated:
+    """
+    Encapsulates outdated Homebrew packages, command telemetry, and query status.
+    """
+    success: bool
+
+    casks: dict[str, str] = field(default_factory=dict)
+    formulae: dict[str, str] = field(default_factory=dict)
+    error: str = ''
+    issue: str = ''
+    returncode: int = -1
+    stderr: str = ''
+    stdout: str = ''
+
+    def __contains__(self, key: object) -> bool:
+        return key in ('casks', 'formulae')
+
+    def __getitem__(self, key: str) -> dict[str, str]:
+        if key == 'casks':
+            return self.casks
+
+        if key == 'formulae':
+            return self.formulae
+
+        raise KeyError(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == 'casks':
+            return self.casks
+
+        if key == 'formulae':
+            return self.formulae
+
+        return default
+
+    @property
+    def has_updates(self) -> bool:
+        return bool(self.casks or self.formulae)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.has_updates
+
+    def to_dict(self) -> dict[str, dict[str, str]]:
+        return {'casks': dict(self.casks), 'formulae': dict(self.formulae)}
 
 
 class HomeBrew:
@@ -70,28 +221,132 @@ class HomeBrew:
         self.timeout = timeout
         self.updates_performed = False
         self.xcode = Xcode(debug_vars=self.debug_vars, dry_run=dry_run, logger=self.logger)
+        self._bottles: BrewBottles = BrewBottles()
         self._fix: fix.RecoveryEngine | None = None
-        self._configure_environment()
+        self.environ: dict[str, str] = self._configure_environment()
 
-    @staticmethod
-    def _configure_environment() -> None:
-        """Prepend Homebrew paths to PATH and enforce non-interactive execution."""
-        path_list = os.environ.get('PATH', '').split(os.pathsep)
-        for brew_dir in ['/opt/homebrew/bin', '/usr/local/bin']:
-            if brew_dir not in path_list:
-                path_list.insert(0, brew_dir)
-        os.environ['PATH'] = os.pathsep.join(path_list)
-        os.environ['HOMEBREW_NO_ASK'] = '1'
-        os.environ['HOMEBREW_NO_ENV_HINTS'] = '1'
+    def _apply_dependency_changes(
+        self,
+        a_formula: str,
+        dep_actions: dict[str, str],
+        outdated: dict[str, str],
+    ) -> bool:
+        """Upgrades outdated dependencies and installs missing dependencies for a formula."""
+        success = True
+        for dep, ver_str in dep_actions.items():
+            is_install = ver_str == NEW_INSTALL
+            action = 'install' if is_install else 'upgrade'
+            if is_install:
+                self.log(f"════ Installing missing dependency {dep} (for {a_formula}) ════")
+            else:
+                self.log(f"════ Upgrading outdated dependency {dep} ({ver_str}) (for {a_formula}) ════")
 
-    def _failure_context(self, cmd: RunCMD, package: str) -> fix.FailureInfo:
-        """Constructs a FailureInfo from a failed RunCMD command and target package."""
-        return fix.FailureInfo.from_runcmd(
-            cmd,
-            log_file=self._get_log_path(package),
-            package=package,
-            subsystem='Homebrew',
+            cmd = self._make_brew_cmd(dep, action)
+            if not cmd:
+                self._warning(action, dep, cmd.returncode, cmd.stderr)
+                success = False
+                continue
+
+            if '==> Installing' in cmd or '==> Upgrading' in cmd:
+                self.updates_performed = True
+            if is_install:
+                self.attempted_installs.add(dep)
+                self.bottles.mark_installed(dep, 'installed')
+                self.logger.store(f"Successfully installed dependency {dep}", 'Homebrew')
+            else:
+                self.attempted_updates.add(dep)
+                outdated.pop(dep, None)
+                new_ver = ver_str.split(self.arrow)[-1].strip() if self.arrow in ver_str else ver_str
+                self.bottles.mark_installed(dep, new_ver)
+                self.logger.store(f"Successfully upgraded dependency {dep} ({ver_str})", 'Homebrew')
+
+        return success
+
+    def _cleanup_homebrew(self) -> None:
+        """Runs `brew cleanup --prune=all` and logs freed space summary or warnings."""
+        self.log("════ Cleaning up Homebrew ════")
+        cleanup_cmd = RunCMD([str(self.brew_path), 'cleanup', '--prune=all'], **self.cmd_options())
+        if cleanup_cmd:
+            freed_lines = [
+                line for line in cleanup_cmd.splitlines(clean=True)
+                if 'freed' in line.lower() or 'pruned' in line.lower()
+            ]
+            if freed_lines:
+                self.log(f"Homebrew cleanup: {freed_lines[-1]}")
+            else:
+                self.log("Homebrew cleanup completed successfully.")
+        else:
+            self.log("[Warning] Homebrew cleanup encountered an issue.")
+
+    def _configure_environment(self) -> dict[str, str]:
+        """Build subprocess environment with architecture-appropriate PATH and non-interactive Homebrew flags."""
+        brew_bin = '/opt/homebrew/bin' if self.is_arm else '/usr/local/bin'
+        existing = [p for p in os.environ.get('PATH', '').split(os.pathsep) if p]
+        return {
+            'HOMEBREW_NO_ASK':       '1',
+            'HOMEBREW_NO_ENV_HINTS': '1',
+            'PATH':                  os.pathsep.join(dict.fromkeys([brew_bin, *existing])),
+        }
+
+    def _filter_dependencies(
+        self,
+        a_formula: str,
+        deps: list[str],
+        outdated_formulae: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Partitions dependencies into missing installs ('New Install') and outdated upgrades."""
+        installed_info = self.brew_list
+        outdated = outdated_formulae if outdated_formulae is not None else {}
+
+        already_ok: list[str] = []
+        actions: dict[str, str] = {}
+
+        for dep in deps:
+            if dep not in installed_info or not installed_info[dep]:
+                actions[dep] = NEW_INSTALL
+            elif dep in outdated:
+                actions[dep] = outdated[dep]
+            else:
+                already_ok.append(dep)
+
+        for dep in already_ok:
+            self.logger.printf(f"Dependency '{dep}' for '{a_formula}' is already installed and up to date.")
+        if actions:
+            self.log(f"Dependencies for '{a_formula}' needing action ({len(actions)}):")
+            for dep, ver_str in actions.items():
+                self.logger.printf(f"  • {dep} ({ver_str or 'outdated'})")
+
+        return actions
+
+    def _finalize_summary(self, expected_updates: dict[str, str], start_snapshot: dict[str, str]) -> None:
+        """Captures end snapshot, computes/validates update summary, and prints package results."""
+        end_snapshot = self.snapshot_installed()
+        summary = BrewBottles.compute_summary(
+            start_snapshot,
+            end_snapshot,
+            list(self.attempted_updates),
+            list(self.attempted_installs),
+            arrow=self.arrow,
         )
+        for category, items in summary.items():
+            self.summary_results[category.lower()].update(items)
+
+        for pkg in summary['Unchanged']:
+            self.summary_results['updated'].pop(pkg, None)
+
+        self._validate_updates(expected_updates, start_snapshot, end_snapshot)
+
+        display_categories = (
+            ('updated', 'Successfully updated', '✔︎'),
+            ('installed', 'Newly installed', '✚'),
+            ('unchanged', 'Attempted but unchanged', '•'),
+        )
+        for cat_key, label, symbol in display_categories:
+            items = self.summary_results[cat_key]
+            if items:
+                self.log(f"\n{label} {len(items)} Homebrew package(s):")
+                for pkg, ver in items.items():
+                    self.logger.printf(f"  {symbol} {pkg} ({ver})")
 
     def _get_cmake_formulae(self, formula_names: list[str] | dict[str, str]) -> list[str]:
         """Identifies which outdated formulae require cmake to build."""
@@ -104,7 +359,7 @@ class HomeBrew:
         if debug_args.get('debug', 0) > 1 and debug_args.get('debug_limit', 0) < 0:
             debug_args['debug'] = 1
         cmake_list: list[str] = []
-        if deps_cmd := RunCMD(a_cmd, timeout=min(self.timeout, 120), **debug_args):
+        if deps_cmd := RunCMD(a_cmd, environ=self.environ, timeout=min(self.timeout, 120), **debug_args):
             deps_dict = deps_cmd.parse_dict()
             cmake_list = [pkg for pkg, deps in deps_dict.items() if pkg in names and 'cmake' in deps.split()]
 
@@ -115,55 +370,63 @@ class HomeBrew:
             self.logger.printf(f"HomeBrew._get_cmake_formulae() found: {cmake_list}")
         return cmake_list
 
-    @staticmethod
-    def _get_log_path(package: str) -> Path:
-        """Discovers the most recent Homebrew build log path for the specified package."""
-        if not package:
-            return Path()
+    def _get_dependencies(self, a_formula: str) -> list[str] | None:
+        """Queries build and runtime dependencies for a formula, recovering once on command failure."""
+        a_cmd = [str(self.brew_path), 'deps', '-n', '--include-build', a_formula]
+        deps_cmd = RunCMD(a_cmd, environ=self.environ, timeout=60, **self.debug_vars)
+        if not deps_cmd:
+            deps_cmd = self.fixer.recover(
+                fix.FailureInfo.from_runcmd(deps_cmd, package=a_formula, subsystem='Homebrew'),
+                lambda: RunCMD(a_cmd, environ=self.environ, timeout=60, **self.debug_vars),
+            ) or deps_cmd
+            if not deps_cmd:
+                self._warning('deps', a_formula, deps_cmd.returncode, deps_cmd.stderr)
+                return None
 
-        log_dir = Path.home() / 'Library' / 'Logs' / 'Homebrew' / package
-        if not log_dir.is_dir():
-            return Path()
+        return deps_cmd.splitlines(clean=True)
 
-        # .        `ls ${log_dir}/*.log`, key=(Use time modified as the value)
-        return max(log_dir.glob('*.log'), key=lambda p: p.stat().st_mtime, default=Path())
-
-    def _get_outdated(
-        self,
-        list_data: list[dict[str, Any]] | str | dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, str]]:
+    def _get_outdated(self, json_data: str | dict[str, Any] | None = None) -> BrewOutdated:
         """Returns formatted outdated packages mapping. Coordinates read and parse if no data passed."""
-        if list_data is None:
-            list_data = self._parse_outdated(self._read_outdated())
-        elif isinstance(list_data, (str, dict)):
-            list_data = self._parse_outdated(list_data)
+        if json_data is None:
+            return self._read_outdated()
 
-        outdated: dict[str, dict[str, str]] = {'casks': {}, 'formulae': {}}
-        for i in list_data:
-            name = i.get('name', '') or i.get('token', '')
-            if i.get('pinned') or not name:
-                continue
+        return self._parse_outdated(json_data)
 
-            installed_list = i.get('installed_versions', [])
-            installed = ', '.join(installed_list)
-            current = i.get('current_version', '')
-            if installed_list and current:
-                latest_installed = max(parse_version(v) for v in installed_list)
-                current_ver = parse_version(current)
-                if latest_installed >= current_ver:
-                    if self.debug_vars['debug'] > 0:
-                        self.logger.printf(
-                            f"[Skipping] '{name}' installed ({installed}) "
-                            f"is already at or above current version ({current}).",
-                        )
-                    continue
+    def _inspect_outdated(self) -> BrewOutdated:
+        """Queries and normalizes outdated Homebrew packages, logging warnings on failure."""
+        outdated = self._get_outdated()
+        if not isinstance(outdated, BrewOutdated):
+            outdated = BrewOutdated(
+                'Error' not in outdated,
+                casks=outdated.get('casks', {}),
+                formulae=outdated.get('formulae', {}),
+            )
 
-            value = self._ver_to_ver(installed, current)
-            bottle_type = i.get('bottle_type', 'formulae')
-            if bottle_type in outdated:
-                outdated[bottle_type][name] = value
+        if not outdated.success:
+            self.log(f"[Warning] Failed to inspect outdated Homebrew packages ({outdated.issue}): {outdated.error}")
+            self.log("[Warning] Skipping formula and cask upgrades due to inspection failure.")
 
         return outdated
+
+    def _load_bottles(self) -> BrewBottles:
+        """Executes `brew list --versions` and returns a BrewBottles inventory."""
+        cmd = RunCMD([str(self.brew_path), 'list', '--versions'], environ=self.environ, **self.debug_vars)
+        return BrewBottles.from_cmd(cmd)
+
+    def _log_dry_run(self) -> None:
+        """Logs dry-run placeholder messages for an update cycle."""
+        self.log("[Dry-run] Would run Homebrew update.")
+        self.log("[Dry-run] Would inspect outdated formulae and install missing dependencies.")
+        self.log("[Dry-run] Would upgrade outdated formulae and casks individually.")
+        self.log("[Dry-run] Would run Homebrew cleanup.")
+
+    def _log_pending_upgrades(self, items: dict[str, str], singular: str, plural: str) -> None:
+        """Logs queued package upgrades with optional version transitions."""
+        label = singular if len(items) == 1 else plural
+        self.log(f"Found {len(items)} {label} (upgrading individually):")
+        for name, ver in items.items():
+            ver_str = f" ({ver})" if ver else ""
+            self.logger.printf(f"  • {name}{ver_str}")
 
     def _make_brew_cmd(
         self,
@@ -182,60 +445,159 @@ class HomeBrew:
         if cask:
             a_cmd.append('--cask')
         a_cmd.append(bottle)
-        opts_dict: dict[str, Any] = {'environ': {'HOMEBREW_NO_ENV_HINTS': '1'}}
+        opts_dict: dict[str, Any] = {}
         if not nice:
             opts_dict['taskpolicy'] = None
         if timeout:
             opts_dict['timeout'] = timeout
         cmd = RunCMD(a_cmd, **self.cmd_options(opts_dict))
         if not cmd:
-            context = self._failure_context(cmd, bottle)
-            cmd = self.fixer.recover(context, lambda: RunCMD(a_cmd, **self.cmd_options(opts_dict))) or cmd
+            cmd = self.fixer.recover(
+                fix.FailureInfo.from_runcmd(cmd, package=bottle, subsystem='Homebrew'),
+                lambda: RunCMD(a_cmd, **self.cmd_options(opts_dict)),
+            ) or cmd
         return cmd
 
-    def _parse_outdated(self, json_data: str | dict[str, Any]) -> list[dict[str, str]]:
-        """Parses brew outdated JSON data into mappings of outdated formulae and casks."""
-        expected_keys = ['casks', 'formulae']
-        data = json.loads(json_data) if isinstance(json_data, str) else json_data
+    def _parse_bottle_entries(self, items: Any) -> dict[str, str]:
+        """Parses list of bottle metadata dictionaries into package-to-version mapping."""
+        if not isinstance(items, list):
+            return {}
+
+        res: dict[str, str] = {}
+        for an_item in items:
+            if not isinstance(an_item, dict):
+                continue
+
+            name = an_item.get('name', '') or an_item.get('token', '')
+            if an_item.get('pinned') or not name:
+                continue
+
+            installed_list = an_item.get('installed_versions', [])
+            installed = ', '.join(installed_list)
+            current = an_item.get('current_version', '')
+            if installed_list and current:
+                latest_installed = max(parse_version(v) for v in installed_list)
+                if latest_installed >= parse_version(current):
+                    if self.debug_vars['debug'] > 0:
+                        self.logger.printf(
+                            f"[Skipping] '{name}' installed ({installed}) "
+                            f"is already at or above current version ({current}).",
+                        )
+                    continue
+
+            res[name] = self._ver_to_ver(installed, current)
+        return res
+
+    def _parse_outdated(
+        self,
+        json_data: str | dict[str, Any],
+        *,
+        returncode: int = 0,
+        stderr: str = '',
+        stdout: str = '',
+    ) -> BrewOutdated:
+        """Parses brew outdated JSON data into BrewOutdated value object."""
+        data: Any = json_data
+        if isinstance(json_data, str):
+            try:
+                data = json.loads(json_data)
+            except json.decoder.JSONDecodeError as err_json:
+                error_msg = f"Failed to parse `brew outdated` JSON: {err_json}"
+                self.log(f"[Warning] {error_msg}")
+                return BrewOutdated(
+                    False,
+                    error=error_msg,
+                    issue='JSONDecodeError',
+                    returncode=returncode,
+                    stderr=stderr,
+                    stdout=stdout or json_data,
+                )
+
+        if not isinstance(data, dict):
+            error_msg = f"Unexpected outdated data root type: {type(data).__name__}"
+            self.log(f"[Warning] {error_msg}")
+            return BrewOutdated(
+                False,
+                error=error_msg,
+                issue='InvalidData',
+                returncode=returncode,
+                stderr=stderr,
+                stdout=stdout,
+            )
+
+        if 'Error' in data:
+            error_msg = f"HomeBrew._parse_outdated: Error payload received:\n{json.dumps(data, indent=2)}"
+            self.log(f"[Warning] {error_msg}")
+            return BrewOutdated(
+                False,
+                error=error_msg,
+                issue='ErrorPayload',
+                returncode=returncode,
+                stderr=stderr,
+                stdout=stdout,
+            )
+
+        expected_keys = ('casks', 'formulae')
+        if expected_keys[0] not in data and expected_keys[1] not in data:
+            error_msg = f"Brew outdated did not contain either key: {list(expected_keys)}. Got: {list(data.keys())}"
+            self.log(f"[Warning] {error_msg}")
+            return BrewOutdated(
+                False,
+                error=error_msg,
+                issue='MissingKeys',
+                returncode=returncode,
+                stderr=stderr,
+                stdout=stdout,
+            )
+
         if self.debug_vars['debug'] > 0:
             if self.debug_vars['debug'] == 1:
-                self.logger.printf(f"HomeBrew._read_outdated.json_str read as:\n{json.dumps(data, indent=2)}")
+                self.logger.printf(f"HomeBrew._parse_outdated read as:\n{json.dumps(data, indent=2)}")
             else:
-                self.logger.printf(f"HomeBrew._read_outdated.json_str with {len(data)} keys: {[data.keys()]}")
+                self.logger.printf(f"HomeBrew._parse_outdated with {len(data)} keys: {list(data.keys())}")
 
-        if expected_keys[0] not in data and expected_keys[1] not in data:
-            self.log(f"Brew outdated did not contain either key: {expected_keys}.  Got: {data.keys()}")
-            return []
+        casks = self._parse_bottle_entries(data.get('casks', []))
+        formulae = self._parse_bottle_entries(data.get('formulae', []))
+        return BrewOutdated(
+            True,
+            casks=casks,
+            formulae=formulae,
+            returncode=returncode,
+            stderr=stderr,
+            stdout=stdout,
+        )
 
-        useful_list = []
-        for bottle_type, bottle_info in data.items():
-            if bottle_type in expected_keys and isinstance(bottle_info, list):
-                for a_bottle in bottle_info:
-                    a_bottle['bottle_type'] = bottle_type
-                    useful_list.append(a_bottle)
-        return useful_list
-
-    def _read_outdated(self) -> dict[str, list[dict[str, Any]]]:
-        """Returns raw JSON dictionary with 'formulae' and 'casks' from brew outdated."""
+    def _read_outdated(self) -> BrewOutdated:
+        """Returns BrewOutdated with formulae and casks from brew outdated --json=v2."""
         a_cmd = [str(self.brew_path), 'outdated', '--json=v2']
         if self.debug_vars['debug_limit'] < 0 and self.debug_vars['debug'] > 1:
-            cmd = RunCMD(a_cmd, debug=1)
-            self.logger.printf(f"{json.loads(cmd.stdout)}\n")
-        else:
-            cmd = RunCMD(a_cmd, **self.debug_vars)
-        if not cmd or not cmd.stdout.strip():
-            return {'casks': [], 'formulae': []}
-
-        try:
-            return json.loads(cmd.stdout)
-
-        except Exception as err_json:
-            message = f"[Warning] Failed to parse brew outdated JSON: {err_json}"
-            if self.debug_vars['debug'] > 0:
-                self.log(message)
+            cmd = RunCMD(a_cmd, debug=1, environ=self.environ)
+            if cmd:
+                self.logger.printf(f"{json.loads(cmd.stdout)}\n")
             else:
-                self.logger.store(message, 'Homebrew')
-            return {'casks': [], 'formulae': []}
+                self.logger.printf(f"RunCMD({a_cmd}) failed:{cmd.std_all}\n")
+        else:
+            cmd = RunCMD(a_cmd, environ=self.environ, **self.debug_vars)
+
+        if not cmd or not cmd.stdout.strip():
+            issue = 'NoOutput' if cmd.stdout == '' and cmd.returncode == 0 else 'CommandFailed'
+            error_msg = f"brew outdated exited with code {cmd.returncode}: {cmd.error or 'No output'}"
+            self.log(f"[Warning] {error_msg}")
+            return BrewOutdated(
+                error=error_msg,
+                issue=issue,
+                returncode=cmd.returncode,
+                stderr=cmd.error,
+                stdout=cmd.stdout,
+                success=False,
+            )
+
+        return self._parse_outdated(
+            cmd.stdout,
+            returncode=cmd.returncode,
+            stderr=cmd.error,
+            stdout=cmd.stdout,
+        )
 
     def _resolve_and_update_dependencies(self, a_formula: str, outdated_formulae: dict[str, str] | None = None) -> bool:
         """
@@ -245,74 +607,19 @@ class HomeBrew:
         3. Dependency installed and up to date: leaves it be.
         :return: True if all dependencies were successfully resolved/updated, False otherwise.
         """
-        a_cmd = [str(self.brew_path), 'deps', '-n', '--include-build', a_formula]
-        deps_cmd = RunCMD(a_cmd, timeout=60, **self.debug_vars)
-        if not deps_cmd or not deps_cmd.stdout.strip():
+        deps = self._get_dependencies(a_formula)
+        if deps is None:  # Error getting dependencies
+            return False
+
+        if not deps:  # No dependencies returned
             return True
 
-        deps = [
-            line.strip() for line in deps_cmd.stdout.splitlines()
-            if line.strip() and not line.startswith(('Warning:', 'Hide these hints', 'This means'))
-        ]
-        if not deps:
-            return True
+        dep_actions = self._filter_dependencies(a_formula, deps, outdated_formulae)
+        if not dep_actions:
+            return True  # No dependencies need to change
 
-        installed_info = self.brew_list
         outdated = outdated_formulae if outdated_formulae is not None else {}
-
-        already_ok: list[str] = []
-        to_install: list[str] = []
-        to_update: list[tuple[str, str]] = []
-
-        for dep in deps:
-            if dep not in installed_info or not installed_info[dep]:
-                to_install.append(dep)
-            elif dep in outdated:
-                to_update.append((dep, outdated[dep]))
-            else:
-                already_ok.append(dep)
-
-        for dep in already_ok:
-            self.logger.printf(f"Dependency '{dep}' for '{a_formula}' is already installed and up to date.")
-        if to_update:
-            self.log(f"Dependencies for '{a_formula}' needing upgrade ({len(to_update)}):")
-            for dep, ver_str in to_update:
-                self.logger.printf(f"  • {dep} ({ver_str})")
-        if to_install:
-            self.log(f"Dependencies for '{a_formula}' needing installation ({len(to_install)}):")
-            for dep in to_install:
-                self.logger.printf(f"  • {dep}")
-
-        success = True
-        for dep, ver_str in to_update:
-            self.log(f"════ Upgrading outdated dependency {dep} ({ver_str}) (for {a_formula}) ════")
-            cmd = self._make_brew_cmd(dep)
-            if cmd:
-                if '==> Installing' in cmd or '==> Upgrading' in cmd:
-                    self.updates_performed = True
-                self.attempted_updates.add(dep)
-                outdated.pop(dep, None)
-                new_ver = ver_str.split(self.arrow)[-1].strip() if self.arrow in ver_str else ver_str
-                self.brew_list[dep] = [parse_version(new_ver)]
-                self.logger.store(f"Successfully upgraded dependency {dep} ({ver_str})", 'Homebrew')
-            else:
-                self._warning('upgrade', dep, cmd.returncode, cmd.stderr)
-                success = False
-
-        for dep in to_install:
-            self.log(f"════ Installing missing dependency {dep} (for {a_formula}) ════")
-            cmd = self._make_brew_cmd(dep, 'install')
-            if cmd:
-                if '==> Installing' in cmd or '==> Upgrading' in cmd:
-                    self.updates_performed = True
-                self.attempted_installs.add(dep)
-                self.brew_list[dep] = [parse_version('installed')]
-                self.logger.store(f"Successfully installed dependency {dep}", 'Homebrew')
-            else:
-                self._warning('install', dep, cmd.returncode, cmd.stderr)
-                success = False
-
-        return success
+        return self._apply_dependency_changes(a_formula, dep_actions, outdated)
 
     @staticmethod
     def _strip_intel_warning(text: str) -> str:
@@ -335,6 +642,20 @@ class HomeBrew:
         omitted = len(lines) - (head + tail)
         truncated_lines = lines[:head] + [f"... ({omitted} lines omitted) ..."] + lines[-tail:]
         return '\n'.join(truncated_lines)
+
+    def _update_metadata(self) -> None:
+        """Runs `brew update --force`, recovering from stranded git rebases on failure."""
+        u_cmd = [str(self.brew_path), 'update', '--force']
+        update_cmd = RunCMD(u_cmd, **self.cmd_options())
+        if (update_cmd.std_all and PATTERN['Rebase'].search(update_cmd.std_all)) or not update_cmd:
+            self.log(
+                "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap.  Self-healing...",
+            )
+            if self.recover_rebase():
+                self.log("Retrying Homebrew update after clearing stranded rebase...")
+                RunCMD(u_cmd, **self.cmd_options())
+            else:
+                self.log("[Warning] Rebase self-healing did not find any stranded locks.")
 
     def _upgrade_casks(self, outdated_casks: dict[str, str]) -> None:
         """Upgrades outdated casks one at a time."""
@@ -373,6 +694,10 @@ class HomeBrew:
 
         if not self.xcode.check_and_install_clt():
             self.log("[Warning] Skipping CMake builds because Xcode Command Line Tools are missing.")
+            for f_name in cmake_formulae:
+                self.summary_results['unchanged'].setdefault(
+                    f_name, outdated_formulae.get(f_name, '') or 'skipped (missing Xcode CLT)',
+                )
             return
 
         self.xcode.check_and_fix_license()
@@ -453,6 +778,72 @@ class HomeBrew:
 
             self._upgrade_formula(f_name, ver, outdated_formulae)
 
+    def _upgrade_outdated(self, outdated: BrewOutdated) -> dict[str, str]:
+        """Upgrades outdated FreshenMac cask, CMake formulae, remaining formulae, and casks."""
+        expected_updates = {**outdated.formulae, **outdated.casks}
+        if 'freshenmac' in outdated.casks:
+            self.self_update_freshenmac(outdated.casks.pop('freshenmac'))
+
+        cmake_formulae = self._get_cmake_formulae(outdated.formulae)
+        # # TODO: Only update Major and Minor versions of formulae that use cmake (unless something needs the Micro)
+        if cmake_formulae:
+            self._upgrade_cmake_formulae(cmake_formulae, outdated.formulae)
+
+        remaining_formulae = {k: v for k, v in outdated.formulae.items() if k not in cmake_formulae}
+        if remaining_formulae:
+            self._log_pending_upgrades(remaining_formulae, 'remaining formula', 'remaining formulae')
+            self._upgrade_formulae(remaining_formulae)
+        elif not cmake_formulae:
+            self.log("All Homebrew formulae are up to date.")
+
+        if outdated.casks:
+            self._log_pending_upgrades(outdated.casks, 'outdated Homebrew cask', 'outdated Homebrew casks')
+            self._upgrade_casks(outdated.casks)
+        else:
+            self.log("All Homebrew casks are up to date.")
+
+        return expected_updates
+
+    def _validate_updates(
+        self,
+        expected_updates: dict[str, str],
+        start_snapshot: dict[str, str],
+        end_snapshot: dict[str, str],
+    ) -> list[str]:
+        """Validates expected updates reached their target versions in the end snapshot."""
+        if not expected_updates or not (start_snapshot or end_snapshot):
+            return []
+
+        unverified: list[str] = []
+        for pkg, ver_transition in expected_updates.items():
+            target_ver = ver_transition.split(self.arrow)[-1].strip() if self.arrow in ver_transition else ''
+            start_ver = start_snapshot.get(pkg, '')
+            end_ver = end_snapshot.get(pkg, '')
+            did_not_advance = bool(start_ver and end_ver and parse_version(end_ver) <= parse_version(start_ver))
+
+            if not end_ver:
+                unverified.append(f"{pkg} (missing)")
+                self.summary_results['updated'].pop(pkg, None)
+                self.summary_results['unchanged'].setdefault(pkg, f"{start_ver} (missing)" if start_ver else 'missing')
+            elif (target_ver and parse_version(end_ver) < parse_version(target_ver)) or did_not_advance:
+                below_target = target_ver and parse_version(end_ver) < parse_version(target_ver)
+                reason = f"{end_ver} < {target_ver}" if below_target else end_ver
+                unverified.append(f"{pkg} ({reason})")
+                if did_not_advance:
+                    self.summary_results['updated'].pop(pkg, None)
+                if pkg not in self.summary_results['updated']:
+                    self.summary_results['unchanged'].setdefault(pkg, end_ver)
+
+        if unverified:
+            self.log(
+                f"[Warning] {len(unverified)} expected Homebrew update(s) not verified updated: "
+                f"{', '.join(unverified)}",
+            )
+        else:
+            self.log(f"✔︎ Verified all {len(expected_updates)} expected Homebrew update(s) updated.")
+
+        return unverified
+
     def _ver_to_ver(self, start_ver: str, end_ver: str) -> str:
         return f"{start_ver} {self.arrow} {end_ver}" if (start_ver and end_ver) else (end_ver or start_ver)
 
@@ -464,16 +855,26 @@ class HomeBrew:
             message = f"exited with code {err_no}: {truncated}".strip(': ')
         self.log(f"[Warning] 'brew {action} {package}' {message}.")
 
-    @cached_property
+    @property
+    def bottles(self) -> BrewBottles:
+        """Returns the current BrewBottles inventory, refreshing from brew list if uninitialized."""
+        if not self._bottles.loaded:
+            self._bottles = self._load_bottles()
+
+        return self._bottles
+
+    @property
     def brew_list(self) -> dict[str, list[Version]]:
-        brew_list_dict: dict[str, list[Version]] = {}
-        a_cmd = [str(self.brew_path), 'list', '--versions']
-        list_cmd = RunCMD(a_cmd, **self.debug_vars)
-        for line in list_cmd.splitlines():
-            parts = line.strip().split()
-            if parts:
-                brew_list_dict[parts[0]] = [parse_version(v) for v in parts[1:]]
-        return brew_list_dict
+        """Returns mapping of package names to their installed Version list."""
+        return self.bottles.installed
+
+    @brew_list.setter
+    def brew_list(self, val: dict[str, list[Version]]) -> None:
+        self._bottles = BrewBottles(installed=val, loaded=True)
+
+    @brew_list.deleter
+    def brew_list(self) -> None:
+        self._bottles = BrewBottles()
 
     @cached_property
     def brew_path(self) -> Path:
@@ -487,7 +888,7 @@ class HomeBrew:
             if brew_candidate.exists():
                 return brew_candidate
 
-        which_brew = shutil.which('brew')
+        which_brew = shutil.which('brew', path=self.environ['PATH'])
         if which_brew:
             return Path(which_brew)
 
@@ -525,6 +926,8 @@ class HomeBrew:
         """Common options dictionary for long-running system/app updates under utility QoS."""
         options = {
             'cancelable': True,
+            'cwd':        Path('/'),
+            'environ':    self.environ,
             'taskpolicy': 'utility',
             'timeout':    self.timeout,
             **self.debug_vars,
@@ -550,7 +953,7 @@ class HomeBrew:
 
     def get_cask_size_mb(self, cask_token: str) -> float:
         """Retrieves download size in MB for a cask via brew info URL HEAD request.  Returns 0.0 if unavailable."""
-        cmd = RunCMD([str(self.brew_path), 'info', '--json=v2', '--cask', cask_token], timeout=30)
+        cmd = RunCMD([str(self.brew_path), 'info', '--json=v2', '--cask', cask_token], environ=self.environ, timeout=30)
         if not cmd:
             return 0.0
 
@@ -586,11 +989,11 @@ class HomeBrew:
         Recovers Homebrew and all taps from interrupted/stranded git rebases and conflicts.
         """
         try:
-            repo_cmd = RunCMD([str(self.brew_path), '--repository'], **self.debug_vars)
+            repo_cmd = RunCMD([str(self.brew_path), '--repository'], environ=self.environ, **self.debug_vars)
             if repo_cmd and repo_cmd.stdout.strip():
                 repo_path = Path(repo_cmd.stdout.strip())
             else:
-                repo_path = Path('/usr/local/Homebrew')
+                repo_path = Path('/opt/homebrew' if self.is_arm else '/usr/local/Homebrew')
         except Exception as err_clean:
             self.log(str(err_clean))
             return False
@@ -616,10 +1019,9 @@ class HomeBrew:
             status_cmd = RunCMD(['git', '-C', str(repo), 'status', '--porcelain'], **self.debug_vars)
             if status_cmd and ('UU ' in status_cmd.stdout or 'both modified' in status_cmd.stdout or is_dirty):
                 self.log(f"[Self-Healing] Cleaning conflicted/dirty tap repository {repo.name}...")
-                RunCMD(['git', '-C', str(repo), 'rebase', '--abort'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'checkout', '-f', '.'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'clean', '-fd'], **self.debug_vars)
-                RunCMD(['git', '-C', str(repo), 'reset', '--hard', 'origin/HEAD'], **self.debug_vars)
+                git_cmds = ['rebase --abort', 'checkout -f .', 'clean -fd', 'reset --hard origin/HEAD']
+                for a_git_cmd in git_cmds:
+                    RunCMD(['git', '-C', str(repo)] + a_git_cmd.split(), **self.debug_vars)
                 is_dirty = True
             if is_dirty:
                 recovered = True
@@ -669,6 +1071,13 @@ class HomeBrew:
                     f"✔︎ [Self-Update] {APP_INFO['Name']} upgraded to {curr_ver} (takes effect on next run).",
                     'SelfUpdate',
                 )
+                if not self.dry_run and RunCMD.can_sudo(validate=True):
+                    target_script = plist.LaunchAgent(debug_vars=self.debug_vars, logger=self.logger).target_script
+                    if target_script.is_file():
+                        RunCMD(
+                            [sys.executable, str(target_script), '--action', 'Install'],
+                            **self.cmd_options({'taskpolicy': None, 'timeout': 60}),
+                        )
                 return True
 
             self._warning('upgrade --cask', APP_INFO['Name'].lower(), upgrade_cmd.returncode, upgrade_cmd.stderr)
@@ -680,133 +1089,22 @@ class HomeBrew:
 
     def snapshot_installed(self) -> dict[str, str]:
         """Snapshots all installed formulae and casks with their primary version."""
-        brew_list_dict: dict[str, list[Version]] = {}
-        snapshots: dict[str, str] = {}
-        cmd_list = RunCMD([str(self.brew_path), 'list', '--versions'], **self.debug_vars)
-        for line in cmd_list.splitlines():
-            parts = line.strip().split()
-            if parts:
-                if len(parts) > 1:
-                    versions = [parse_version(v) for v in parts[1:]]
-                    latest = max(versions, default=parse_version(parts[1]))
-                    snapshots[parts[0]] = str(latest)
-                    brew_list_dict[parts[0]] = versions
-                else:
-                    snapshots[parts[0]] = 'installed'
-                    brew_list_dict[parts[0]] = [parse_version('installed')]
-        if 'brew_list' not in self.__dict__:
-            self.__dict__['brew_list'] = brew_list_dict
-        return snapshots
+        self._bottles = self._load_bottles()
+        return self._bottles.snapshot()
 
     def update(self) -> bool:
         self.log(f"════ Updating Homebrew ({'Apple Silicon' if self.is_arm else 'Intel'}) ════")
-
         if self.dry_run:
-            self.log("[Dry-run] Would run Homebrew update.")
-            self.log("[Dry-run] Would inspect outdated formulae and install missing dependencies.", )
-            self.log("[Dry-run] Would upgrade outdated formulae and casks individually.")
-            self.log("[Dry-run] Would run Homebrew cleanup.")
+            self._log_dry_run()
             return False
 
         start_snapshot = self.snapshot_installed()
+        self._update_metadata()
 
-        # 1. Update Homebrew metadata
-        u_cmd = [str(self.brew_path), 'update', '--force']
-        update_cmd = RunCMD(u_cmd, **self.cmd_options())
-        if (update_cmd.std_all and PATTERN['Rebase'].search(update_cmd.std_all)) or not update_cmd:
-            self.log(
-                "[Warning] Homebrew repository is stuck in an interrupted git rebase or dirty tap.  Self-healing...",
-            )
-            if self.recover_rebase():
-                self.log("Retrying Homebrew update after clearing stranded rebase...")
-                RunCMD(u_cmd, **self.cmd_options())
-            else:
-                self.log("[Warning] Rebase self-healing did not find any stranded locks.")
+        outdated = self._inspect_outdated()
+        expected_updates = self._upgrade_outdated(outdated) if outdated.success else {}
 
-        # 2. Check for outdated formulae and casks, find CMake updates, Update FreshenMac
-        outdated = self._get_outdated()
-        if 'freshenmac' in outdated.get('casks', {}):
-            self.self_update_freshenmac(outdated['casks'].pop('freshenmac'))
-
-        # 3. Find and perform CMake updates
-        cmake_formulae = self._get_cmake_formulae(outdated.get('formulae', {}))
-        # # TODO: Only update Major and Minor versions of formulae that use cmake (unless something needs the Micro)
-        if cmake_formulae:
-            self._upgrade_cmake_formulae(cmake_formulae, outdated['formulae'])
-
-        remaining_formulae = {k: v for k, v in outdated['formulae'].items() if k not in cmake_formulae}
-
-        # 3. Perform updates
-        if remaining_formulae:
-            self.log(
-                f"Found {len(remaining_formulae)} remaining formula{'e' if len(remaining_formulae) != 1 else ''} "
-                "(upgrading individually):",
-            )
-            for f_name, ver in remaining_formulae.items():
-                ver_str = f" ({ver})" if ver else ""
-                self.logger.printf(f"  • {f_name}{ver_str}")
-            self._upgrade_formulae(remaining_formulae)
-        elif not cmake_formulae:
-            self.log("All Homebrew formulae are up to date.")
-
-        if outdated['casks']:
-            self.log(
-                f"Found {len(outdated['casks'])} outdated Homebrew cask{'s' if len(outdated['casks']) != 1 else ''} "
-                "(upgrading individually):",
-            )
-            for c_name, ver in outdated['casks'].items():
-                ver_str = f" ({ver})" if ver else ""
-                self.logger.printf(f"  • {c_name}{ver_str}")
-            self._upgrade_casks(outdated['casks'])
-        else:
-            self.log("All Homebrew casks are up to date.")
-
-        # 3. Clean up old downloads and kegs
-        self.log("════ Cleaning up Homebrew ════")
-        cleanup_cmd = RunCMD([str(self.brew_path), 'cleanup', '--prune=all'], **self.cmd_options())
-        if cleanup_cmd:
-            freed_lines = [
-                line.strip() for line in cleanup_cmd.stdout.splitlines()
-                if 'freed' in line.lower() or 'pruned' in line.lower()
-            ]
-            if freed_lines:
-                self.log(f"Homebrew cleanup: {freed_lines[-1]}")
-            else:
-                self.log("Homebrew cleanup completed successfully.")
-        else:
-            self.log("[Warning] Homebrew cleanup encountered an issue.")
-
-        end_snapshot = self.snapshot_installed()
-        for pkg in self.attempted_updates:
-            start_ver = start_snapshot.get(pkg, '')
-            end_ver = end_snapshot.get(pkg, start_ver)
-            if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
-                self.summary_results['updated'][pkg] = self._ver_to_ver(start_ver, end_ver)
-            elif start_ver:
-                self.summary_results['unchanged'][pkg] = start_ver
-
-        for pkg in self.attempted_installs:
-            end_ver = end_snapshot.get(pkg, 'installed')
-            if pkg not in start_snapshot:
-                self.summary_results['installed'][pkg] = end_ver
-            else:
-                start_ver = start_snapshot.get(pkg, '')
-                if start_ver and end_ver and parse_version(end_ver) > parse_version(start_ver):
-                    self.summary_results['updated'][pkg] = self._ver_to_ver(start_ver, end_ver)
-                else:
-                    self.summary_results['unchanged'][pkg] = end_ver
-
-        if self.summary_results['updated']:
-            self.log(f"\nSuccessfully updated {len(self.summary_results['updated'])} Homebrew package(s):")
-            for pkg, ver in self.summary_results['updated'].items():
-                self.logger.printf(f"  ✔︎ {pkg} ({ver})")
-        if self.summary_results['installed']:
-            self.log(f"\nNewly installed {len(self.summary_results['installed'])} Homebrew package(s):")
-            for pkg, ver in self.summary_results['installed'].items():
-                self.logger.printf(f"  ✚ {pkg} ({ver})")
-        if self.summary_results['unchanged']:
-            self.log(f"\nAttempted but unchanged {len(self.summary_results['unchanged'])} Homebrew package(s):")
-            for pkg, ver in self.summary_results['unchanged'].items():
-                self.logger.printf(f"  • {pkg} ({ver})")
+        self._cleanup_homebrew()
+        self._finalize_summary(expected_updates, start_snapshot)
 
         return bool(self.summary_results['updated'] or self.summary_results['installed'] or self.updates_performed)
